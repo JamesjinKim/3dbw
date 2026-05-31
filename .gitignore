@@ -27,3 +27,7 @@ nvs_wifi.csv
 __pycache__/
 *.pyc
 rpi-receiver/*.csv
+
+# bkit/IDE 자동 생성 상태 파일
+docs/.pdca-status.json
+.bkit-memory.json
