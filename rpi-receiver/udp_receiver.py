@@ -20,6 +20,7 @@ import struct
 import argparse
 import time
 import sys
+from datetime import datetime
 
 MAGIC = 0x49495333  # "IIS3"
 HEADER = struct.Struct("<IBBHII")  # 16 bytes
@@ -48,10 +49,10 @@ def local_ip():
 def main():
     ap = argparse.ArgumentParser(description="IIS3DWB UDP 수신기")
     ap.add_argument("--port", type=int, default=9000, help="수신 포트 (기본 9000)")
-    ap.add_argument("--out", default="vibration.csv", help="저장할 CSV 파일")
-    ap.add_argument("--mg", action="store_true", help="raw 대신 mg 단위로 저장")
+    ap.add_argument("--out", default="vibration.csv",
+                    help="저장할 CSV 파일 (raw+mg 모두 기록)")
     ap.add_argument("--fs", type=int, default=4, choices=[2, 4, 8, 16],
-                    help="풀스케일 ±g (mg 변환용, 기본 4)")
+                    help="센서 풀스케일 ±g (mg 환산용, 펌웨어 설정과 일치, 기본 4)")
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -69,11 +70,14 @@ def main():
     print(f"      server_ip   = {ip}")
     print(f"      server_port = {args.port}")
     print("=" * 52)
-    print(f"[수신 대기] … (Ctrl+C 종료)")
+    print(f"  저장 파일 : {args.out}  (raw + mg 전체 샘플)")
+    print(f"  풀스케일  : ±{args.fs}g  (감도 {SENSITIVITY[args.fs]} mg/LSB)")
+    print(f"[수신 대기] … 센서를 흔들면 X/Y/Z 값이 변합니다. (Ctrl+C 종료)")
 
     sens = SENSITIVITY[args.fs]
     f = open(args.out, "w")
-    f.write("seq,timestamp_ms,sample_idx,x,y,z\n")
+    # 실제 센서 데이터: raw(LSB)와 mg(가속도) 둘 다 기록 + 수신 시각
+    f.write("recv_iso,seq,timestamp_ms,sample_idx,x_raw,y_raw,z_raw,x_mg,y_mg,z_mg\n")
 
     last_seq = None
     total_pkts = 0
@@ -82,6 +86,7 @@ def main():
     t0 = None              # 첫 패킷 도착 시각 (대기시간 제외 위해 지연 설정)
     last_report = time.time()
     win_samples = 0        # 직전 보고 이후 누적 (순간 레이트용)
+    cur = (0, 0, 0)        # 화면 표시용 최신 샘플 (raw)
 
     try:
         while True:
@@ -113,14 +118,17 @@ def main():
                 continue
             samples = struct.unpack_from("<%dh" % (count * 3), data, HEADER_SIZE)
 
-            # CSV 기록 (raw 또는 mg)
+            # 수신 시각 (사람이 읽는 ISO, ms 정밀도)
+            recv_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+
+            # CSV 기록: raw(LSB) + mg(가속도) 모두 — 실제 센서 데이터
             for i in range(count):
-                x, y, z = samples[i*3], samples[i*3+1], samples[i*3+2]
-                if args.mg:
-                    x, y, z = x * sens, y * sens, z * sens
-                    f.write(f"{seq},{ts},{i},{x:.2f},{y:.2f},{z:.2f}\n")
-                else:
-                    f.write(f"{seq},{ts},{i},{x},{y},{z}\n")
+                xr, yr, zr = samples[i*3], samples[i*3+1], samples[i*3+2]
+                f.write(f"{recv_iso},{seq},{ts},{i},{xr},{yr},{zr},"
+                        f"{xr*sens:.2f},{yr*sens:.2f},{zr*sens:.2f}\n")
+
+            # 화면 표시용: 이 패킷의 마지막 샘플 (가장 최신)
+            cur = (samples[(count-1)*3], samples[(count-1)*3+1], samples[(count-1)*3+2])
 
             total_pkts += 1
             total_samples += count
@@ -135,9 +143,11 @@ def main():
                 elapsed = now - t0
                 eff_hz = total_samples / elapsed if elapsed > 0 else 0
                 loss_pct = 100.0 * lost / (total_samples + lost) if (total_samples + lost) else 0
-                print(f"\r[{addr[0]}] 패킷={total_pkts} 샘플={total_samples} "
-                      f"순간≈{inst_hz:.0f}Hz 평균≈{eff_hz:.0f}Hz "
-                      f"(목표 {RATE_HZ.get(rate,'?')}Hz) 유실≈{loss_pct:.2f}%   ",
+                # 실제 센서값 (최신 샘플) — mg 단위로 표시. 흔들면 값이 변함.
+                xm, ym, zm = cur[0]*sens, cur[1]*sens, cur[2]*sens
+                print(f"\r[{addr[0]}] {inst_hz:.0f}Hz 유실{loss_pct:.2f}% │ "
+                      f"X={xm:+8.1f} Y={ym:+8.1f} Z={zm:+8.1f} mg │ "
+                      f"샘플={total_samples}   ",
                       end="", flush=True)
                 win_samples = 0
                 last_report = now
