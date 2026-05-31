@@ -79,8 +79,9 @@ def main():
     total_pkts = 0
     total_samples = 0
     lost = 0
-    t0 = time.time()
-    last_report = t0
+    t0 = None              # 첫 패킷 도착 시각 (대기시간 제외 위해 지연 설정)
+    last_report = time.time()
+    win_samples = 0        # 직전 보고 이후 누적 (순간 레이트용)
 
     try:
         while True:
@@ -94,6 +95,10 @@ def main():
             magic, ver, rate, count, seq, ts = HEADER.unpack_from(data, 0)
             if magic != MAGIC:
                 continue
+
+            # 첫 패킷 도착 시각 기준으로 평균 계산 (수신기 대기시간 제외)
+            if t0 is None:
+                t0 = time.time()
 
             # 손실 감지 (seq 불연속)
             if last_seq is not None:
@@ -119,25 +124,34 @@ def main():
 
             total_pkts += 1
             total_samples += count
+            win_samples += count
 
             # 1초마다 상태 출력
             now = time.time()
             if now - last_report >= 1.0:
+                # 순간 레이트: 직전 보고 이후 구간 (실제 수신 속도 = 1000Hz여야)
+                inst_hz = win_samples / (now - last_report)
+                # 평균 레이트: 첫 패킷 도착 이후 (대기시간 제외)
                 elapsed = now - t0
                 eff_hz = total_samples / elapsed if elapsed > 0 else 0
                 loss_pct = 100.0 * lost / (total_samples + lost) if (total_samples + lost) else 0
                 print(f"\r[{addr[0]}] 패킷={total_pkts} 샘플={total_samples} "
-                      f"실효레이트≈{eff_hz:.0f}Hz (목표 {RATE_HZ.get(rate,'?')}Hz) "
-                      f"유실≈{loss_pct:.2f}%", end="", flush=True)
+                      f"순간≈{inst_hz:.0f}Hz 평균≈{eff_hz:.0f}Hz "
+                      f"(목표 {RATE_HZ.get(rate,'?')}Hz) 유실≈{loss_pct:.2f}%   ",
+                      end="", flush=True)
+                win_samples = 0
                 last_report = now
 
     except KeyboardInterrupt:
         print("\n[종료]")
     finally:
         f.close()
-        elapsed = time.time() - t0
+        elapsed = (time.time() - t0) if t0 else 0
         print(f"\n총 패킷={total_pkts}, 샘플={total_samples}, 추정유실={lost}")
-        print(f"평균 실효레이트≈{total_samples/elapsed:.0f}Hz" if elapsed > 0 else "")
+        if elapsed > 0:
+            print(f"평균 실효레이트≈{total_samples/elapsed:.0f}Hz (첫 수신 이후 {elapsed:.0f}초)")
+        else:
+            print("(수신된 데이터 없음)")
         print(f"저장: {args.out}")
 
 
