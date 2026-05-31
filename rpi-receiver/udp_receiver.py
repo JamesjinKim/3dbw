@@ -32,6 +32,19 @@ RATE_HZ = {0: 1000, 1: 3333, 2: 6667, 3: 13333, 4: 26667}
 SENSITIVITY = {2: 0.061, 4: 0.122, 8: 0.244, 16: 0.488}
 
 
+def local_ip():
+    """이 라즈베리파이가 네트워크에서 가지는 IP를 알아냄.
+    이 값을 디바이스(ESP32) NVS의 server_ip 에 넣어야 한다."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))   # 실제 전송 X, 출구 IP만 확인
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
 def main():
     ap = argparse.ArgumentParser(description="IIS3DWB UDP 수신기")
     ap.add_argument("--port", type=int, default=9000, help="수신 포트 (기본 9000)")
@@ -44,7 +57,19 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", args.port))
     sock.settimeout(1.0)
-    print(f"[수신 대기] UDP 포트 {args.port} … (Ctrl+C 종료)")
+
+    ip = local_ip()
+    print("=" * 52)
+    print("  IIS3DWB UDP 수신기")
+    print("=" * 52)
+    print(f"  이 라즈베리파이 IP : {ip}")
+    print(f"  수신 포트          : {args.port}")
+    print()
+    print("  ▶ 디바이스(ESP32) NVS 에 아래 값을 넣으세요:")
+    print(f"      server_ip   = {ip}")
+    print(f"      server_port = {args.port}")
+    print("=" * 52)
+    print(f"[수신 대기] … (Ctrl+C 종료)")
 
     sens = SENSITIVITY[args.fs]
     f = open(args.out, "w")
