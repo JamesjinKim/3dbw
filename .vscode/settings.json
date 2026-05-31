@@ -1,0 +1,15 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.espIdfPath": "${env:HOME}/esp/v5.4.3/esp-idf",
+  "idf.pythonBinPath": "${env:HOME}/.espressif/python_env/idf5.4_py3.12_env/bin/python",
+  "idf.toolsPath": "${env:HOME}/.espressif",
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
+  ],
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32s3"
+  },
+  "idf.port": "/dev/cu.usbserial-143410",
+  "idf.baudRate": "460800",
+  "idf.flashBaudRate": "460800"
+}

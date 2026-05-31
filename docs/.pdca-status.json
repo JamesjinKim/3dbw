@@ -1,0 +1,681 @@
+{
+  "version": "2.0",
+  "lastUpdated": "2026-05-29T06:31:39.499Z",
+  "activeFeatures": [
+    "config_manager",
+    "wifi_manager",
+    "serial_protocol",
+    "main",
+    "config-tool",
+    "src-tauri",
+    "ui",
+    "sensor_streamer",
+    "rpi-receiver"
+  ],
+  "primaryFeature": "config_manager",
+  "features": {
+    "config_manager": {
+      "phase": "do",
+      "phaseNumber": 3,
+      "matchRate": null,
+      "iterationCount": 0,
+      "requirements": [],
+      "documents": {},
+      "timestamps": {
+        "started": "2026-05-29T00:20:30.198Z",
+        "lastUpdated": "2026-05-29T06:27:54.604Z"
+      },
+      "lastFile": "/Users/kimkookjin/Projects/ESP-IDF/IIS3DWB/components/config_manager/config_manager.c"
+    },
+    "wifi_manager": {
+      "phase": "do",
+      "phaseNumber": 3,
+      "matchRate": null,
+      "iterationCount": 0,
+      "requirements": [],
+      "documents": {},
+      "timestamps": {
+        "started": "2026-05-29T00:21:45.178Z",
+        "lastUpdated": "2026-05-29T01:57:09.731Z"
+      },
+      "lastFile": "/Users/kimkookjin/Projects/ESP-IDF/IIS3DWB/components/wifi_manager/wifi_manager.c"
+    },
+    "serial_protocol": {
+      "phase": "do",
+      "phaseNumber": 3,
+      "matchRate": null,
+      "iterationCount": 0,
+      "requirements": [],
+      "documents": {},
+      "timestamps": {
+        "started": "2026-05-29T00:26:19.762Z",
+        "lastUpdated": "2026-05-29T01:44:28.839Z"
+      },
+      "lastFile": "/Users/kimkookjin/Projects/ESP-IDF/IIS3DWB/components/serial_protocol/serial_protocol.c"
+    },
+    "main": {
+      "phase": "do",
+      "phaseNumber": 3,
+      "matchRate": null,
+      "iterationCount": 0,
+      "requirements": [],
+      "documents": {},
+      "timestamps": {
+        "started": "2026-05-29T00:27:33.814Z",
+        "lastUpdated": "2026-05-29T06:30:43.681Z"
+      },
+      "lastFile": "/Users/kimkookjin/Projects/ESP-IDF/IIS3DWB/main/main.c"
+    },
+    "config-tool": {
+      "phase": "do",
+      "phaseNumber": 3,
+      "matchRate": null,
+      "iterationCount": 0,
+      "requirements": [],
+      "documents": {},
+      "timestamps": {
+        "started": "2026-05-29T00:44:58.349Z",
+        "lastUpdated": "2026-05-29T00:44:58.349Z"
+      },
+      "lastFile": "/Users/kimkookjin/Projects/ESP-IDF/IIS3DWB/config-tool/vite.config.js"
+    },
+    "src-tauri": {
+      "phase": "do",
+      "phaseNumber": 3,
+      "matchRate": null,
+      "iterationCount": 0,
+      "requirements": [],
+      "documents": {},
+      "timestamps": {
+        "started": "2026-05-29T00:46:06.153Z",
+        "lastUpdated": "2026-05-29T05:06:17.472Z"
+      },
+      "lastFile": "/Users/kimkookjin/Projects/ESP-IDF/IIS3DWB/config-tool/src-tauri/src/lib.rs"
+    },
+    "ui": {
+      "phase": "do",
+      "phaseNumber": 3,
+      "matchRate": null,
+      "iterationCount": 0,
+      "requirements": [],
+      "documents": {},
+      "timestamps": {
+        "started": "2026-05-29T00:47:34.345Z",
+        "lastUpdated": "2026-05-29T06:02:47.470Z"
+      },
+      "lastFile": "/Users/kimkookjin/Projects/ESP-IDF/IIS3DWB/config-tool/ui/main.js"
+    },
+    "sensor_streamer": {
+      "phase": "do",
+      "phaseNumber": 3,
+      "matchRate": null,
+      "iterationCount": 0,
+      "requirements": [],
+      "documents": {},
+      "timestamps": {
+        "started": "2026-05-29T06:28:52.416Z",
+        "lastUpdated": "2026-05-29T06:29:37.061Z"
+      },
+      "lastFile": "/Users/kimkookjin/Projects/ESP-IDF/IIS3DWB/components/sensor_streamer/sensor_streamer.c"
+    },
+    "rpi-receiver": {
+      "phase": "do",
+      "phaseNumber": 3,
+      "matchRate": null,
+      "iterationCount": 0,
+      "requirements": [],
+      "documents": {},
+      "timestamps": {
+        "started": "2026-05-29T06:31:39.499Z",
+        "lastUpdated": "2026-05-29T06:31:39.499Z"
+      },
+      "lastFile": "/Users/kimkookjin/Projects/ESP-IDF/IIS3DWB/rpi-receiver/udp_receiver.py"
+    }
+  },
+  "pipeline": {
+    "currentPhase": 1,
+    "level": "Dynamic",
+    "phaseHistory": []
+  },
+  "session": {
+    "startedAt": "2026-05-28T23:45:06.553Z",
+    "onboardingCompleted": false,
+    "lastActivity": "2026-05-29T06:31:39.499Z"
+  },
+  "history": [
+    {
+      "timestamp": "2026-05-29T00:20:30.198Z",
+      "feature": "config_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:21:09.835Z",
+      "feature": "config_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:21:45.178Z",
+      "feature": "wifi_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:25:49.672Z",
+      "feature": "wifi_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:26:19.762Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:27:22.985Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:27:33.814Z",
+      "feature": "main",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:28:26.312Z",
+      "feature": "main",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:28:41.629Z",
+      "feature": "main",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:44:58.349Z",
+      "feature": "config-tool",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:46:06.153Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:46:10.614Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T00:47:34.345Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:01:34.656Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:10:46.979Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:11:04.244Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:13:32.480Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:13:43.716Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:18:34.639Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:18:41.299Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:21:52.564Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:22:07.228Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:24:15.873Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:26:38.288Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:26:46.653Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:31:10.644Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:31:28.660Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:39:23.909Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:39:40.900Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:43:05.311Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:44:28.839Z",
+      "feature": "serial_protocol",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:56:28.485Z",
+      "feature": "wifi_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:56:38.253Z",
+      "feature": "wifi_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:56:53.262Z",
+      "feature": "wifi_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:56:58.761Z",
+      "feature": "wifi_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:57:09.731Z",
+      "feature": "wifi_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T01:57:17.774Z",
+      "feature": "main",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T03:56:59.805Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T03:57:19.362Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T03:57:26.310Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T03:59:05.930Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T03:59:15.985Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T03:59:21.462Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T03:59:29.685Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T03:59:34.951Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:02:03.348Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:04:07.676Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:04:15.602Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:04:21.844Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:04:26.867Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:04:41.616Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:05:24.143Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:08:29.231Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:10:09.036Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:11:20.755Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:29:19.296Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:29:38.922Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:29:58.694Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:32:09.858Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:35:42.124Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:40:30.901Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:40:36.874Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:47:51.514Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:48:11.739Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:56:19.408Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:56:37.392Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T04:57:37.035Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T05:05:41.956Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T05:05:50.846Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T05:06:00.370Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T05:06:09.688Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T05:06:17.472Z",
+      "feature": "src-tauri",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T05:07:28.739Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T05:45:58.601Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T05:46:06.030Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T05:55:58.874Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T05:56:08.307Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:02:30.486Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:02:37.764Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:02:47.470Z",
+      "feature": "ui",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:27:07.438Z",
+      "feature": "config_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:27:15.391Z",
+      "feature": "config_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:27:29.481Z",
+      "feature": "config_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:27:54.604Z",
+      "feature": "config_manager",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:28:52.416Z",
+      "feature": "sensor_streamer",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:29:37.061Z",
+      "feature": "sensor_streamer",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:30:22.486Z",
+      "feature": "main",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:30:43.681Z",
+      "feature": "main",
+      "phase": "do",
+      "action": "updated"
+    },
+    {
+      "timestamp": "2026-05-29T06:31:39.499Z",
+      "feature": "rpi-receiver",
+      "phase": "do",
+      "action": "updated"
+    }
+  ]
+}

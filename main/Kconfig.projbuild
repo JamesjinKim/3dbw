@@ -1,0 +1,146 @@
+menu "WiFi Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID (network name) for the WiFi network to connect to.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            Password for the WiFi network.
+
+    config WIFI_MAXIMUM_RETRY
+        int "Maximum WiFi Retry Count"
+        default 10
+        help
+            Maximum number of retry attempts before giving up on WiFi connection.
+
+    config WIFI_SCAN_AUTH_MODE_THRESHOLD
+        int "WiFi Scan Auth Mode Threshold"
+        default 0
+        help
+            WiFi Authentication Mode threshold (0=OPEN, 1=WEP, 2=WPA_PSK, 3=WPA2_PSK, 4=WPA_WPA2_PSK).
+            Use 0 (OPEN) to accept any authentication mode from the AP.
+
+endmenu
+
+menu "IIS3DWB Vibration Sensor Configuration"
+
+    config IIS3DWB_SPI_HOST
+        int "SPI Host (2=SPI2, 3=SPI3)"
+        default 2
+        range 2 3
+        help
+            SPI host number. Use 2 for SPI2_HOST or 3 for SPI3_HOST.
+            Default: 2 (SPI2_HOST)
+
+    config IIS3DWB_SPI_MOSI_GPIO
+        int "SPI MOSI GPIO Number"
+        default 13
+        help
+            GPIO number for SPI MOSI (Master Out Slave In).
+            This connects to SDA/SDI on IIS3DWB.
+
+    config IIS3DWB_SPI_MISO_GPIO
+        int "SPI MISO GPIO Number"
+        default 12
+        help
+            GPIO number for SPI MISO (Master In Slave Out).
+            This connects to SDO on IIS3DWB.
+
+    config IIS3DWB_SPI_SCLK_GPIO
+        int "SPI SCLK GPIO Number"
+        default 14
+        help
+            GPIO number for SPI SCLK (Serial Clock).
+            This connects to SCL on IIS3DWB.
+
+    config IIS3DWB_SPI_CS_GPIO
+        int "SPI CS GPIO Number"
+        default 15
+        help
+            GPIO number for SPI CS (Chip Select).
+            This connects to CS on IIS3DWB.
+
+    config IIS3DWB_SPI_FREQ_HZ
+        int "SPI Clock Frequency (Hz)"
+        default 1000000
+        range 100000 10000000
+        help
+            SPI clock frequency in Hz.
+            Maximum supported: 10 MHz
+            Default: 1 MHz (conservative)
+
+    choice IIS3DWB_FULL_SCALE
+        prompt "Full Scale Selection"
+        default IIS3DWB_FS_4G
+        help
+            Select the accelerometer full-scale range.
+            Higher range allows measuring larger accelerations.
+
+        config IIS3DWB_FS_2G
+            bool "+/-2g"
+        config IIS3DWB_FS_4G
+            bool "+/-4g"
+        config IIS3DWB_FS_8G
+            bool "+/-8g"
+        config IIS3DWB_FS_16G
+            bool "+/-16g"
+    endchoice
+
+    config IIS3DWB_FULL_SCALE
+        hex
+        default 0x00 if IIS3DWB_FS_2G
+        default 0x08 if IIS3DWB_FS_4G
+        default 0x0C if IIS3DWB_FS_8G
+        default 0x04 if IIS3DWB_FS_16G
+
+    choice IIS3DWB_BANDWIDTH
+        prompt "Low-Pass Filter Bandwidth"
+        default IIS3DWB_BW_ODR_DIV_4
+        help
+            Select the low-pass filter bandwidth.
+            ODR is fixed at 26.667 kHz.
+
+        config IIS3DWB_BW_ODR_DIV_4
+            bool "ODR/4 (~6.67 kHz)"
+        config IIS3DWB_BW_ODR_DIV_10
+            bool "ODR/10 (~2.67 kHz)"
+        config IIS3DWB_BW_ODR_DIV_20
+            bool "ODR/20 (~1.33 kHz)"
+        config IIS3DWB_BW_ODR_DIV_45
+            bool "ODR/45 (~593 Hz)"
+        config IIS3DWB_BW_ODR_DIV_100
+            bool "ODR/100 (~267 Hz)"
+        config IIS3DWB_BW_ODR_DIV_200
+            bool "ODR/200 (~133 Hz)"
+        config IIS3DWB_BW_ODR_DIV_400
+            bool "ODR/400 (~67 Hz)"
+        config IIS3DWB_BW_ODR_DIV_800
+            bool "ODR/800 (~33 Hz)"
+    endchoice
+
+    config IIS3DWB_BANDWIDTH
+        int
+        default 0 if IIS3DWB_BW_ODR_DIV_4
+        default 1 if IIS3DWB_BW_ODR_DIV_10
+        default 2 if IIS3DWB_BW_ODR_DIV_20
+        default 3 if IIS3DWB_BW_ODR_DIV_45
+        default 4 if IIS3DWB_BW_ODR_DIV_100
+        default 5 if IIS3DWB_BW_ODR_DIV_200
+        default 6 if IIS3DWB_BW_ODR_DIV_400
+        default 7 if IIS3DWB_BW_ODR_DIV_800
+
+    config IIS3DWB_READ_INTERVAL_MS
+        int "Sensor Read Interval (ms)"
+        range 10 60000
+        default 100
+        help
+            Time interval between sensor readings in milliseconds.
+            Note: Sensor ODR is 26.667 kHz, but reading interval
+            can be set independently for monitoring purposes.
+
+endmenu

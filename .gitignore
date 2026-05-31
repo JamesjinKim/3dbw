@@ -1,0 +1,29 @@
+# ===== ESP-IDF 빌드 산출물 (재생성 가능) =====
+build/
+managed_components/
+dependencies.lock
+
+# ===== 자동 생성 설정 (실제 WiFi 정보 포함될 수 있음) =====
+# sdkconfig.defaults 만 추적, 나머지 sdkconfig* 는 제외
+sdkconfig
+sdkconfig.old
+sdkconfig.backup_console
+sdkconfig.ci
+
+# ===== 별도 저장소 (config-tool은 자체 repo) =====
+config-tool/
+
+# ===== 민감 정보 (실제 WiFi 자격증명) =====
+nvs_wifi.bin
+nvs_wifi.csv
+*.nvs.bin
+
+# ===== OS / 에디터 =====
+.DS_Store
+*.swp
+*~
+
+# ===== Python 캐시 (rpi-receiver) =====
+__pycache__/
+*.pyc
+rpi-receiver/*.csv

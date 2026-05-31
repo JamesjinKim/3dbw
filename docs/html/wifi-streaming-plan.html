@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WiFi 센서 데이터 스트리밍 — 기획서</title>
+<style>
+  :root{--bg:#0f1419;--card:#1a2029;--card2:#222b36;--text:#e6e9ee;--muted:#98a2b3;
+        --accent:#4dabf7;--green:#51cf66;--yellow:#ffd43b;--red:#ff6b6b;--magenta:#cc5de8;
+        --border:#2d3744;--mono:"SF Mono","JetBrains Mono","Consolas",monospace;}
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Segoe UI",sans-serif;
+       background:var(--bg);color:var(--text);line-height:1.75;}
+  .wrap{max-width:1000px;margin:0 auto;padding:0 24px 80px;}
+  header{background:linear-gradient(135deg,#1864ab 0%,#0b2d52 100%);padding:48px 24px 40px;
+         text-align:center;border-bottom:1px solid var(--border);}
+  header h1{margin:0 0 8px;font-size:28px;}
+  header p{margin:0;color:#cfe2ff;font-size:15px;}
+  .badge{display:inline-block;background:rgba(255,255,255,.15);padding:3px 12px;border-radius:20px;
+         font-size:12px;margin-top:14px;letter-spacing:.5px;}
+  h2{margin:48px 0 16px;font-size:22px;padding-bottom:10px;border-bottom:2px solid var(--accent);
+     display:flex;align-items:center;gap:10px;}
+  h2 .num{background:var(--accent);color:#06121f;width:30px;height:30px;border-radius:8px;
+          display:inline-flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;flex-shrink:0;}
+  h3{margin:28px 0 12px;font-size:17px;color:var(--accent);}
+  p{color:#d4d9e0;}
+  .muted{color:var(--muted);font-size:14px;}
+  pre,.flow{background:#0b0f14;border:1px solid var(--border);border-radius:10px;padding:16px 18px;
+       overflow-x:auto;font-family:var(--mono);font-size:12.5px;color:#cdd6e0;line-height:1.55;}
+  .flow{white-space:pre;color:#a5d8ff;}
+  code{font-family:var(--mono);background:var(--card2);padding:2px 7px;border-radius:5px;font-size:13px;color:#ffd8a8;}
+  pre code{background:none;padding:0;color:inherit;}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px;}
+  th,td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--border);vertical-align:top;}
+  th{background:var(--card2);color:var(--accent);font-weight:600;}
+  tr:hover td{background:rgba(77,171,247,.06);}
+  .pill{padding:2px 9px;border-radius:12px;font-size:12px;font-weight:600;white-space:nowrap;}
+  .ok{background:rgba(81,207,102,.18);color:var(--green);}
+  .warn{background:rgba(255,212,59,.18);color:var(--yellow);}
+  .no{background:rgba(255,107,107,.18);color:var(--red);}
+  .note{border-left:4px solid var(--yellow);background:rgba(255,212,59,.08);padding:12px 18px;border-radius:0 8px 8px 0;margin:16px 0;}
+  .note.green{border-color:var(--green);background:rgba(81,207,102,.08);}
+  .note.blue{border-color:var(--accent);background:rgba(77,171,247,.08);}
+  .note.red{border-color:var(--red);background:rgba(255,107,107,.08);}
+  .toc{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:18px 24px;margin:24px 0;}
+  .toc a{color:var(--accent);text-decoration:none;display:block;padding:3px 0;}
+  .toc a:hover{text-decoration:underline;}
+  footer{text-align:center;color:var(--muted);font-size:13px;margin-top:60px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>📡 WiFi 센서 데이터 무선 스트리밍 — 기획서</h1>
+  <p>IIS3DWB 진동센서: USB는 전력만, 데이터는 WiFi로 라즈베리파이 서버에 전송</p>
+  <div class="badge">ESP32-S3 · ESP-IDF v5.4.3 · 기획 2026-05-29</div>
+</header>
+
+<div class="wrap">
+
+  <div class="toc">
+    <strong>목차</strong>
+    <a href="#why">1. 기획 의도 (한 장 요약)</a>
+    <a href="#flow">2. 데이터 흐름</a>
+    <a href="#rate">3. 샘플레이트 5단계 (설정값)</a>
+    <a href="#packet">4. 패킷 포맷</a>
+    <a href="#fw">5. 펌웨어 구조</a>
+    <a href="#server">6. 라즈베리파이 수신</a>
+    <a href="#risk">7. 기술 리스크 (정직한 검토)</a>
+    <a href="#status">8. 구현 현황 &amp; 단계</a>
+  </div>
+
+  <!-- 1 -->
+  <h2 id="why"><span class="num">1</span> 기획 의도 (한 장 요약)</h2>
+  <div class="note green">
+    <strong>핵심:</strong> 진동센서를 <b>USB로는 전력만</b> 공급받고,
+    <b>측정 데이터는 WiFi로 무선 전송</b>하여 라즈베리파이 서버에서 수집한다.
+    설치 위치 제약(데이터 케이블 불필요) 없이, 전원만 있으면 무선으로 진동을 모니터링한다.
+  </div>
+  <table>
+    <tr><th>구분</th><th>역할</th></tr>
+    <tr><td><b>USB 케이블</b></td><td>전력 공급 (+ 최초 WiFi 설정 시 통신)</td></tr>
+    <tr><td><b>WiFi</b></td><td>센서 데이터 무선 전송 (운영 중 주 채널)</td></tr>
+    <tr><td><b>라즈베리파이</b></td><td>데이터 수신·저장·분석 서버</td></tr>
+  </table>
+  <p class="muted">왜 무선인가? 진동 모니터링 대상(설비·기계)에 센서를 붙일 때 데이터 케이블을
+    길게 끄는 것은 비현실적이다. 전원(USB)만 공급하고 데이터는 무선으로 보내면 설치가 자유롭다.</p>
+
+  <!-- 2 -->
+  <h2 id="flow"><span class="num">2</span> 데이터 흐름</h2>
+  <div class="flow">┌──────────────── ESP32-S3 펌웨어 ────────────────┐
+│  [IIS3DWB] ─SPI→ sensor_task ─(링버퍼)→ tx_task │
+│   진동센서        (생산자)              (소비자)  │
+│                                            │ UDP  │
+│   설정(NVS): 서버IP, 포트, 샘플레이트       │      │
+└────────────────────────────────────────────┼──────┘
+              USB(전력)                        ▼ WiFi
+                              [라즈베리파이] udp_receiver.py
+                                → 파싱 → CSV 저장 + 유실률 표시</div>
+  <p><b>생산자-소비자 분리</b>가 핵심 설계다. 센서 읽기(SPI)와 WiFi 전송을 별도 태스크로 나눠,
+    한쪽이 느려도 다른 쪽을 막지 않는다. 중간 링버퍼가 속도 차를 흡수한다.</p>
+
+  <!-- 3 -->
+  <h2 id="rate"><span class="num">3</span> 샘플레이트 5단계 (설정값)</h2>
+  <p>26.6kHz로 고정하지 않고 <b>설정값으로 조절</b>한다. 같은 펌웨어로 환경·용도에 맞게 선택.</p>
+  <table>
+    <tr><th>단계</th><th>유효 레이트</th><th>대역폭(3축×2B)</th><th>방식</th><th>용도</th></tr>
+    <tr><td>0</td><td><b>1 kHz</b></td><td>~6 KB/s</td><td>폴링</td><td>일반 모니터링 (기본값)</td></tr>
+    <tr><td>1</td><td>3.3 kHz</td><td>~20 KB/s</td><td>폴링</td><td>저속 분석</td></tr>
+    <tr><td>2</td><td>6.6 kHz</td><td>~40 KB/s</td><td>FIFO</td><td>중속</td></tr>
+    <tr><td>3</td><td>13.3 kHz</td><td>~80 KB/s</td><td>FIFO</td><td>고속</td></tr>
+    <tr><td>4</td><td><b>26.6 kHz</b></td><td>~160 KB/s</td><td>FIFO</td><td>정밀 진동분석</td></tr>
+  </table>
+  <div class="note blue">
+    <b>왜 설정값인가?</b> 26.6kHz는 WiFi 대역폭 부담이 커서 환경에 따라 불안정할 수 있다.
+    저속부터 선택 가능하게 하면 ① 안정 우선 환경은 저속, ② 정밀 분석은 고속으로 골라 쓰고,
+    ③ 고속이 안 되는 환경에서도 낮춰서 계속 쓸 수 있다 (전부 못 쓰는 일 없음).
+    저장 위치: NVS (<code>stream_rate</code>, 0~4).
+  </div>
+
+  <!-- 4 -->
+  <h2 id="packet"><span class="num">4</span> 패킷 포맷 (바이너리 UDP)</h2>
+  <p>UDP 데이터그램 = 헤더(16B) + 샘플 배열. 효율과 손실 추적을 위해 바이너리 + 시퀀스 번호.</p>
+  <pre><code>헤더 (16바이트)
+  magic(4)="IIS3"  version(1)  rate_step(1)  sample_count(2)
+  seq(4)           timestamp_ms(4)
+페이로드 (sample_count × 6바이트)
+  각 샘플: int16 x, int16 y, int16 z   (little-endian)
+
+패킷당 200샘플 → 200×6 + 16 = 1216 바이트 (UDP MTU 안전)</code></pre>
+  <table>
+    <tr><th>설계 선택</th><th>이유</th></tr>
+    <tr><td>원시 int16 전송 (mg 변환 X)</td><td>디바이스 부담↓. mg 변환은 서버에서 (감도=풀스케일 의존)</td></tr>
+    <tr><td>seq(시퀀스 번호)</td><td>UDP 패킷 손실/순서 추적 → 유실률 측정</td></tr>
+    <tr><td>바이너리 (JSON 아님)</td><td>고속에서 JSON은 오버헤드 과다</td></tr>
+  </table>
+
+  <!-- 5 -->
+  <h2 id="fw"><span class="num">5</span> 펌웨어 구조</h2>
+  <table>
+    <tr><th>컴포넌트</th><th>역할</th><th>상태</th></tr>
+    <tr><td><code>components/sensor_streamer/</code></td><td>UDP 전송: sensor_task + tx_task + 링버퍼</td><td><span class="pill ok">구현</span></td></tr>
+    <tr><td><code>components/config_manager/</code></td><td>서버IP/포트/레이트 NVS 저장·로드 (확장)</td><td><span class="pill ok">구현</span></td></tr>
+    <tr><td><code>main/main.c</code></td><td>WiFi 연결+센서+서버설정 있으면 스트리밍 시작</td><td><span class="pill ok">구현</span></td></tr>
+    <tr><td>전송 추상화 (UDP↔TCP)</td><td>UDP 1순위, TCP는 함수 교체로 전환 가능</td><td><span class="pill warn">UDP만</span></td></tr>
+    <tr><td>FIFO 묶음 읽기 (고속)</td><td>6.6kHz↑용 <code>iis3dwb_read_fifo()</code></td><td><span class="pill warn">예정</span></td></tr>
+  </table>
+  <div class="note">
+    오버런 처리: WiFi가 센서 속도를 못 따라가 링버퍼가 가득 차면, 가장 오래된 샘플을 버리고
+    <b>드롭 카운트</b>를 올린다 (시스템 멈춤 방지 + 유실 측정).
+  </div>
+
+  <!-- 6 -->
+  <h2 id="server"><span class="num">6</span> 라즈베리파이 수신</h2>
+  <p><code>rpi-receiver/udp_receiver.py</code> — Python 표준 라이브러리만 사용 (추가 설치 불필요).</p>
+  <table>
+    <tr><th>기능</th><th>내용</th></tr>
+    <tr><td>수신</td><td>UDP 포트(기본 9000)에서 패킷 수신, magic 검증</td></tr>
+    <tr><td>저장</td><td>CSV: <code>seq, timestamp_ms, sample_idx, x, y, z</code> (raw 또는 mg)</td></tr>
+    <tr><td>모니터</td><td>1초마다 실효 샘플레이트 / 유실률 실시간 표시</td></tr>
+  </table>
+  <pre><code># 라즈베리파이에서
+python3 udp_receiver.py                  # 포트 9000, raw CSV
+python3 udp_receiver.py --mg --fs 4      # mg 단위 (±4g)</code></pre>
+
+  <!-- 7 -->
+  <h2 id="risk"><span class="num">7</span> 기술 리스크 (정직한 검토)</h2>
+  <div class="note red">
+    <b>26.6kHz 원시 스트리밍은 도전적이다.</b>
+    160KB/s(=1.28Mbps) + 오버헤드를 ESP32-S3 WiFi로 끊김 없이 지속하는 것은 환경 의존적이다.
+  </div>
+  <table>
+    <tr><th>리스크</th><th>대응</th></tr>
+    <tr><td>고속에서 WiFi가 못 따라감</td><td>샘플레이트 5단계 → 낮춰서 사용 (전부 실패 방지)</td></tr>
+    <tr><td>UDP 패킷 손실</td><td>설계상 감수. seq로 유실률 측정. 심하면 TCP 전환 또는 레이트 하향</td></tr>
+    <tr><td>폴링으로 고속 한계</td><td>6.6kHz↑는 센서 FIFO 묶음 읽기로 전환 (예정)</td></tr>
+    <tr><td>26.6kHz 실측 미확정</td><td>실측 전 보장 불가. 13.3kHz가 현실적 상한일 수 있음 → 단계 설정이라 무방</td></tr>
+  </table>
+  <div class="note blue">
+    <b>전략:</b> 처음부터 풀스피드를 노리지 않고, <b>저속(1kHz)으로 "무선 도달" 먼저 검증</b> →
+    단계적으로 속도를 올리며 한계를 확인한다.
+  </div>
+
+  <!-- 8 -->
+  <h2 id="status"><span class="num">8</span> 구현 현황 &amp; 단계</h2>
+  <table>
+    <tr><th>단계</th><th>내용</th><th>상태</th></tr>
+    <tr><td>설계</td><td>Plan + Design 문서 (PDCA)</td><td><span class="pill ok">완료</span></td></tr>
+    <tr><td>1단계</td><td>NVS 설정 + UDP 전송 + 저속(1kHz) + 수신기</td><td><span class="pill ok">구현·빌드</span></td></tr>
+    <tr><td>실기기 검증</td><td>라즈베리파이로 실제 수신 확인</td><td><span class="pill warn">대기</span></td></tr>
+    <tr><td>2단계</td><td>FIFO 읽기 → 중·고속 (6.6k~26.6kHz)</td><td><span class="pill warn">예정</span></td></tr>
+    <tr><td>3단계</td><td>안정화 (유실/재연결/장시간), 26.6kHz 한계 확인</td><td><span class="pill warn">예정</span></td></tr>
+    <tr><td>설정 툴 연동</td><td>GUI에서 서버IP/레이트 설정 주입</td><td><span class="pill warn">예정</span></td></tr>
+    <tr><td>(선택) TCP</td><td>신뢰성 필요 시 transport 전환</td><td><span class="pill warn">선택</span></td></tr>
+  </table>
+
+  <div class="note green">
+    <b>현재 위치:</b> 1단계 구현·빌드 완료. 다음은 <b>실기기 검증</b> —
+    디바이스에 라즈베리파이 IP를 설정하고, 저속(1kHz)으로 데이터가 실제 도달하는지 확인.
+  </div>
+
+  <footer>
+    IIS3DWB Vibration Sensor — WiFi 센서 스트리밍 기획서<br>
+    근거 문서: <code>docs/01-plan/.../wifi-sensor-streaming.plan.md</code> ·
+    <code>docs/02-design/.../wifi-sensor-streaming.design.md</code>
+  </footer>
+</div>
+</body>
+</html>
