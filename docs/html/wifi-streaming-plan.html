@@ -68,6 +68,7 @@
     <a href="#risk">7. 기술 리스크 (정직한 검토)</a>
     <a href="#status">8. 구현 현황 &amp; 단계</a>
     <a href="#ratemismatch" style="color:var(--green)"><b>9. ✅ 고속 설정 메뉴 vs 실제 능력 (해결됨)</b></a>
+    <a href="#interrupt">10. 폴링 vs 인터럽트 — 현재 보드는 인터럽트 불가</a>
   </div>
 
   <!-- 1 -->
@@ -88,13 +89,14 @@
 
   <!-- 2 -->
   <h2 id="flow"><span class="num">2</span> 데이터 흐름</h2>
-  <div class="flow">┌──────────────── ESP32-S3 펌웨어 ────────────────┐
+  <div class="flow">
+┌──────────────── ESP32-S3 펌웨어 ────────────────┐
 │  [IIS3DWB] ─SPI→ sensor_task ─(링버퍼)→ tx_task │
-│   진동센서        (생산자)              (소비자)  │
-│                                            │ UDP  │
-│   설정(NVS): 서버IP, 포트, 샘플레이트       │      │
-└────────────────────────────────────────────┼──────┘
-              USB(전력)                        ▼ WiFi
+│   진동센서        (생산자)                (소비자)  │
+│                                               │ UDP  │
+│   설정(NVS): 서버IP, 포트, 샘플레이트               │      │
+└───────────────────────────────────────────────┼──────┘
+              USB(전력)                           ▼ WiFi
                               [라즈베리파이] udp_receiver.py
                                 → 파싱 → CSV 저장 + 유실률 표시</div>
   <p><b>생산자-소비자 분리</b>가 핵심 설계다. 센서 읽기(SPI)와 WiFi 전송을 별도 태스크로 나눠,
@@ -302,6 +304,51 @@ python3 udp_receiver.py --mg --fs 4      # mg 단위 (±4g)</code></pre>
     <b>26.6kHz 실기기 무손실 달성</b>(드롭0/에러0). 저속(1kHz) 폴링 경로는 그대로 보존.
     <br>단, INT 핀 미연결(SPI+UART만)로 <b>하드웨어 인터럽트 대신 Watermark 효율 폴링</b>으로 CPU 부하를 줄임.
     상세: <code>docs/html/high-speed-fifo-report.html</code>.
+  </div>
+
+  <!-- 10 -->
+  <h2 id="interrupt"><span class="num">10</span> 폴링 vs 인터럽트 — 현재 보드는 인터럽트 불가</h2>
+
+  <div class="note red">
+    <b>하드웨어 제약:</b> 현재 보드는 <b>SPI + UART만 사용</b>하며, IIS3DWB의 <b>INT1/INT2 핀이
+    ESP32-S3 GPIO에 연결되어 있지 않다.</b> 따라서 <b>하드웨어 인터럽트(핀 → ISR) 방식은 구현 불가</b>다.
+    인터럽트를 쓰려면 보드에 INT 핀 배선을 물리적으로 추가해야 한다.
+  </div>
+
+  <h3>10.1 1kHz 저속 — 폴링과 인터럽트의 성능은 사실상 동일</h3>
+  <p>"1kHz 폴링을 인터럽트로 바꾸면 부하가 줄지 않나?"라는 질문에 대한 답: <b>거의 동일하며,
+  오히려 인터럽트가 미세하게 불리할 수 있다.</b></p>
+  <table>
+    <tr><th>방식</th><th>초당 이벤트</th><th>CPU 점유(대략)</th><th>비고</th></tr>
+    <tr><td>1kHz 폴링 (현재)</td><td>1,000</td><td>~0.7%</td><td>대부분 vTaskDelay로 잠듦</td></tr>
+    <tr><td>1kHz 인터럽트</td><td>1,000</td><td>~0.7~1%</td><td>ISR 진입/탈출 비용 추가</td></tr>
+    <tr><td>26.6kHz 단발 폴링</td><td>26,667</td><td><span class="pill no">불가</span></td><td>틱 한계로 따라잡기 실패</td></tr>
+    <tr><td>26.6kHz FIFO 효율폴링 (현재 고속)</td><td>~1,000 (묶음)</td><td>~2%</td><td>묶어 읽어 효율적</td></tr>
+  </table>
+  <div class="note blue">
+    <b>왜 1kHz는 차이가 없나?</b> 인터럽트가 폴링보다 유리한 조건은 ① 이벤트가 <b>불규칙·드물 때</b>,
+    ② <b>고속이라 폴링이 못 따라갈 때</b>이다. 1kHz는 둘 다 아니다 — 매 1ms 규칙적이고 느리다.
+    1샘플당 SPI 트랜잭션(~7µs)이 초당 1000번이라 CPU 점유가 ~0.7%에 불과하고, 나머지는 이미 잠들어 있다.
+    인터럽트로 바꿔도 ISR 진입 비용만 더해질 뿐 이득이 없다.
+  </div>
+
+  <h3>10.2 인터럽트가 의미 있는 곳 = 고속, 그것은 이미 해결됨</h3>
+  <p>인터럽트의 실질 이점은 고속(26.6kHz)에서 나온다. 그러나 그 영역은 이미
+  <b>FIFO 버스트 + Watermark 효율 폴링</b>으로 해결했다(9장). INT 핀 없이도 26.6kHz 무손실을 달성했고,
+  CPU는 FIFO가 쌓일 동안 <code>vTaskDelay</code>로 양보하여 부하가 낮다.</p>
+
+  <h3>10.3 결론 &amp; 향후</h3>
+  <table>
+    <tr><th>상황</th><th>권장</th></tr>
+    <tr><td>1kHz 저속</td><td>현재 <b>폴링 유지</b> (인터럽트로 바꿔도 이득 없음)</td></tr>
+    <tr><td>고속(3.3k~26.6kHz)</td><td>현재 <b>FIFO 효율 폴링</b> (INT 핀 없이 해결 완료)</td></tr>
+    <tr><td>코드 일관성/추가 최적화로 진짜 INT 원할 때</td><td>보드에 <b>INT 핀 배선 추가</b> 필요 → 그 후 <code>vTaskDelay</code>를 세마포어(ISR give)로 교체</td></tr>
+  </table>
+  <div class="note green">
+    <b>정리:</b> 현재 보드(INT 핀 미연결)에서는 인터럽트 방식이 <b>불가능</b>하다.
+    다만 1kHz는 폴링/인터럽트 성능이 동일하고, 고속은 FIFO 효율 폴링으로 이미 해결했으므로
+    <b>현재 구조로 현장 요구(저부하·고속)를 모두 충족</b>한다.
+    향후 INT 핀이 배선되면 설계상 세마포어 교체만으로 인터럽트 전환이 가능하도록 준비돼 있다.
   </div>
 
   <footer>
