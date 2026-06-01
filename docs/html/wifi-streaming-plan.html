@@ -234,11 +234,11 @@ python3 udp_receiver.py --mg --fs 4      # mg 단위 (±4g)</code></pre>
   <h3>9.3 의사결정 옵션 (보류 중 — 미선택)</h3>
   <table>
     <tr><th>옵션</th><th>내용</th><th>장점</th><th>단점</th></tr>
-    <tr>
-      <td><b>A. FIFO 구현</b><br>(2단계)</td>
-      <td>드라이버에 FIFO 버스트 읽기 추가 + 스트리머 교체</td>
-      <td>6.6k~26.6kHz 실제 달성, 메뉴가 진짜 동작</td>
-      <td>작업량 큼 (드라이버+스트리머+검증)</td>
+    <tr style="background:#e7f5ff">
+      <td><b>A. FIFO 구현</b><br>(하이브리드, <span style="color:#1971c2">권장</span>)</td>
+      <td>저속=폴링(현재 유지) + 중·고속=FIFO 버스트, <code>rate_step</code>으로 자동 전환</td>
+      <td>6.6k~26.6kHz 실제 달성, 메뉴가 진짜 동작, <b>검증된 1kHz 경로 보존</b></td>
+      <td>FIFO 읽기 구현 필요 (단, 기반 함수 일부 존재)</td>
     </tr>
     <tr>
       <td><b>B. 메뉴 제한</b></td>
@@ -254,11 +254,37 @@ python3 udp_receiver.py --mg --fs 4      # mg 단위 (±4g)</code></pre>
     </tr>
   </table>
 
+  <h3>9.4 권장: 하이브리드 구조 (옵션 A의 구현 형태)</h3>
+  <p>옵션 A는 폴링을 <b>버리는</b> 게 아니라, 폴링과 FIFO를 <b><code>rate_step</code>으로 자동 선택</b>하는
+  하이브리드로 구현하는 것이 안전합니다. 사용자는 속도만 고르면 되고, 방식은 펌웨어가 알아서 전환합니다.</p>
+
+  <table>
+    <tr><th>rate_step</th><th>속도</th><th>방식</th><th>상태</th></tr>
+    <tr><td>0</td><td>1 kHz</td><td>폴링 (현재 방식)</td><td><span class="pill ok">검증됨, 그대로 유지</span></td></tr>
+    <tr><td>1~4</td><td>3.3k ~ 26.6kHz</td><td>FIFO 버스트 읽기</td><td><span class="pill warn">신규 구현</span></td></tr>
+  </table>
+
+  <div class="note">
+    <b>구조 — 생산자만 분기, 나머지 공통:</b>
+    <pre style="margin:8px 0 0">[센서 태스크] ─→ [링버퍼] ─→ [전송 태스크] ─→ UDP ─→ 라즈베리파이
+   ↑ 여기만 분기        ↑ 이하 전부 공통 (그대로 재사용)
+
+ rate_step==0  →  sensor_task_polling()   (현재, 검증됨)
+ rate_step>=1  →  sensor_task_fifo()      (FIFO 버스트, 신규)</pre>
+  </div>
+
+  <p><b>하이브리드의 이점:</b></p>
+  <ul>
+    <li>✅ 검증된 1kHz 폴링 경로를 <b>건드리지 않음</b> (회귀 리스크 0)</li>
+    <li>✅ 링버퍼·전송·패킷 포맷 <b>그대로 재사용</b> → FIFO 작업이 "센서 읽기"에만 집중</li>
+    <li>✅ FIFO 미완성이어도 <b>저속 제품은 즉시 출시 가능</b> (단계적 출시)</li>
+    <li>✅ 기반 일부 존재: <code>iis3dwb_read_registers()</code>(연속 SPI), FIFO 레지스터 정의</li>
+  </ul>
+  <p class="muted">신규 구현: <code>iis3dwb_fifo_enable()</code> + <code>iis3dwb_read_fifo()</code>(STATUS로 적재수 확인→DATA_OUT 버스트) + <code>sensor_task_fifo()</code> + start()의 rate_step 분기.</p>
+
   <div class="note blue">
-    <b>현재 상태:</b> 위 A/B/C 중 <b>아직 선택하지 않음</b>. 1단계(1kHz)는 실기기 검증 완료.
-    <br><b>판단 기준:</b> "고주파(수 kHz 이상) 진동 성분 분석이 제품 핵심 가치인가?"
-    (예: 베어링 결함, 고주파 결함 진단) → 필수면 <b>A(FIFO)</b>.
-    초기엔 저속으로 충분하다면 <b>B</b>로 정리 후 추후 A.
+    <b>현재 상태:</b> 옵션 <b>A(하이브리드)로 방향 확정</b> → 별도 PDCA(<code>high-speed-fifo</code>)로 구현 계획 진행.
+    1단계(1kHz)는 실기기 검증 완료, 저속 경로는 그대로 보존됩니다.
   </div>
 
   <footer>
