@@ -67,6 +67,38 @@
     padding-top:20px;border-top:1px solid var(--line)}
   .kvs{font-size:13px;color:var(--muted)}
   hr{border:none;border-top:1px solid var(--line);margin:36px 0}
+
+  /* ===== 설정 툴 GUI 목업 ===== */
+  .gui-wrap{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:18px 0 6px}
+  @media(max-width:820px){.gui-wrap{grid-template-columns:1fr;max-width:340px;margin-inline:auto}}
+  .gui{background:#f4f6fa;border-radius:12px;overflow:hidden;
+    box-shadow:0 8px 24px #0008;color:#1a212b;display:flex;flex-direction:column}
+  .gui-titlebar{background:#e4e8ef;padding:8px 12px;display:flex;align-items:center;gap:6px}
+  .dot{width:11px;height:11px;border-radius:50%}
+  .dot.r{background:#ff5f57}.dot.y{background:#febc2e}.dot.g{background:#28c840}
+  .gui-title{font-size:12px;color:#5b6675;margin-left:8px;font-weight:600}
+  .gui-body{padding:16px 16px 18px;display:flex;flex-direction:column;gap:8px;flex:1}
+  .gui-steps{display:flex;gap:4px;font-size:10.5px;margin-bottom:4px}
+  .gs{flex:1;text-align:center;padding:4px 2px;border-radius:6px;background:#e4e8ef;color:#9aa4b2}
+  .gs.active{background:#4ea1ff;color:#fff;font-weight:700}
+  .gs.done{background:#cfe9d4;color:#2a8a3c}
+  .gui-h{font-size:15px;font-weight:700;margin:2px 0}
+  .gui-tag{font-size:10px;background:#ffe7b3;color:#8a5a00;padding:2px 7px;border-radius:10px;font-weight:600;vertical-align:middle}
+  .gui-desc{font-size:12px;color:#6b7686}
+  .gui-label{font-size:11.5px;color:#5b6675;font-weight:600;margin-top:4px}
+  .gui-label .map{float:right;color:#9b7bd8;font-weight:600;font-family:monospace;font-size:10.5px}
+  .gui-input{background:#fff;border:1px solid #c7cfdb;border-radius:7px;padding:8px 10px;
+    font-size:12.5px;color:#1a212b;width:100%}
+  .gui-btn{background:#4ea1ff;color:#fff;border:none;border-radius:8px;padding:9px;
+    font-size:13px;font-weight:700;cursor:default;margin-top:4px}
+  .gui-btn.ghost{background:#fff;color:#4ea1ff;border:1.5px solid #4ea1ff}
+  .gui-link{font-size:11px;color:#8a93a3;text-align:center;text-decoration:underline;margin-top:2px}
+  .gui-done{width:54px;height:54px;border-radius:50%;background:#28c840;color:#fff;
+    font-size:30px;display:flex;align-items:center;justify-content:center;margin:6px auto 2px}
+  .gui-result{background:#fff;border:1px solid #d6dde7;border-radius:8px;padding:10px 12px;font-size:12px}
+  .gui-result div{display:flex;justify-content:space-between;padding:3px 0}
+  .gui-result span{color:#7a8494}
+  .gui-result b{color:#1a212b}
 </style>
 </head>
 <body>
@@ -215,6 +247,69 @@ IIS3DWB 초광대역 진동 센서가 측정한 가속도 데이터를 <b>USB로
   <tr><td><code>transport</code></td><td>u8</td><td>0</td><td>0=UDP (1=TCP, 후속 단계)</td></tr>
 </table>
 <div class="warn"><b>주의:</b> WiFi와 수신 서버(라즈베리파이)는 반드시 <b>같은 2.4GHz 네트워크</b>에 있어야 합니다. ESP32-S3는 5GHz를 지원하지 않습니다.</div>
+
+<h4>설정 툴 (GUI) — 화면 미리보기</h4>
+<p>위 NVS 값들은 보통 전용 <b>설정 툴(config-tool)</b>의 GUI로 입력합니다. 사용자는 USB로 디바이스를 연결하고 WiFi·서버 정보만 입력하면, 툴이 자동으로 NVS에 기록합니다.</p>
+
+<div class="gui-wrap">
+  <!-- STEP 1: 디바이스 연결 -->
+  <div class="gui">
+    <div class="gui-titlebar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="gui-title">IIS3DWB WiFi 설정</span></div>
+    <div class="gui-body">
+      <div class="gui-steps"><span class="gs active">① 연결</span><span class="gs">② WiFi 입력</span><span class="gs">③ 완료</span></div>
+      <div class="gui-h">WiFi 설정 시작</div>
+      <div class="gui-desc">아래에서 디바이스를 연결하세요.</div>
+      <label class="gui-label">USB 포트</label>
+      <select class="gui-input"><option>/dev/cu.usbmodem1433301</option></select>
+      <button class="gui-btn ghost">디바이스 연결</button>
+      <button class="gui-btn">WiFi 설정 ▶</button>
+      <div class="gui-link">고급: 펌웨어 재설치 / 업데이트</div>
+    </div>
+  </div>
+
+  <!-- STEP 2: WiFi/서버 입력 -->
+  <div class="gui">
+    <div class="gui-titlebar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="gui-title">IIS3DWB WiFi 설정</span></div>
+    <div class="gui-body">
+      <div class="gui-steps"><span class="gs done">① 연결</span><span class="gs active">② WiFi 입력</span><span class="gs">③ 완료</span></div>
+      <div class="gui-h">WiFi 정보 입력 <span class="gui-tag">2.4GHz만 지원</span></div>
+      <label class="gui-label">WiFi 이름 (SSID) <span class="map">→ wifi_ssid</span></label>
+      <input class="gui-input" value="MyWiFi-2.4G">
+      <label class="gui-label">비밀번호 <span class="map">→ wifi_pass</span></label>
+      <input class="gui-input" value="••••••••" type="password">
+      <label class="gui-label">서버 IP / 포트 <span class="map">→ srv_ip / srv_port</span></label>
+      <div style="display:flex;gap:8px">
+        <input class="gui-input" value="192.168.0.37" style="flex:2">
+        <input class="gui-input" value="9000" style="flex:1">
+      </div>
+      <label class="gui-label">샘플레이트 <span class="map">→ stream_rate</span></label>
+      <select class="gui-input"><option>0 — 1 kHz (기본)</option></select>
+      <button class="gui-btn">저장 &amp; 연결 확인</button>
+    </div>
+  </div>
+
+  <!-- STEP 3: 완료 -->
+  <div class="gui">
+    <div class="gui-titlebar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="gui-title">IIS3DWB WiFi 설정</span></div>
+    <div class="gui-body">
+      <div class="gui-steps"><span class="gs done">① 연결</span><span class="gs done">② WiFi 입력</span><span class="gs active">③ 완료</span></div>
+      <div class="gui-done">✓</div>
+      <div class="gui-h" style="text-align:center">설정 완료! &amp; WiFi 연결됨</div>
+      <div class="gui-result">
+        <div><span>펌웨어</span><b>v1.0.0</b></div>
+        <div><span>WiFi</span><b>MyWiFi-2.4G</b></div>
+        <div><span>IP 주소</span><b>192.168.0.225</b></div>
+        <div><span>서버</span><b>192.168.0.37:9000</b></div>
+      </div>
+      <div class="gui-desc" style="text-align:center">이제 USB를 분리해도 전원만 넣으면 자동 연결됩니다.</div>
+      <button class="gui-btn ghost">다른 디바이스 설정</button>
+    </div>
+  </div>
+</div>
+<div class="kvs" style="text-align:center;margin-top:-4px">▲ 설정 툴 화면 예시 (실제 동작 화면이 아닌 설명용 목업). 입력값이 자동으로 NVS 키에 매핑됩니다.</div>
 
 <!-- ============ 라즈베리파이 ============ -->
 <h2 id="rpi">3. 라즈베리파이 수신 서버 <span class="pill rpi">라즈베리파이</span></h2>
