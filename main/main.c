@@ -650,11 +650,18 @@ void app_main(void)
 
     vTaskDelay(pdMS_TO_TICKS(500));
 
+    // 스트리밍 활성 여부 미리 판단 (스트리밍이면 모니터링 태스크와 센서 경합 방지)
+    bool streaming_active = (iis3dwb_initialized && wifi_manager_is_connected()
+                             && config_manager_has_stream());
+
     // ===== Start IIS3DWB Sensor Reading Task =====
-    if (iis3dwb_initialized) {
+    if (iis3dwb_initialized && !streaming_active) {
+        // 스트리밍이 아닐 때만 모니터링 태스크 가동 (FIFO와 SPI/센서 경합 방지)
         ESP_LOGI(TAG, "");
         ESP_LOGI(TAG, "Step 3: Starting Vibration Monitoring");
         xTaskCreate(iis3dwb_read_task, "iis3dwb_read", 4096, NULL, 5, NULL);
+    } else if (iis3dwb_initialized && streaming_active) {
+        ESP_LOGI(TAG, "Step 3: (스트리밍 모드 — 모니터링 태스크 생략, 센서 경합 방지)");
     } else {
         ESP_LOGW(TAG, "");
         ESP_LOGW(TAG, "No sensor available. Starting GPIO test mode...");

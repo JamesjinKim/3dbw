@@ -92,7 +92,11 @@ extern "C" {
  * Register Bit Definitions
  * ============================================================================ */
 /* CTRL1_XL (0x10) - Accelerometer control register 1 */
-#define IIS3DWB_CTRL1_XL_XL_EN      (1 << 7) /**< Accelerometer enable */
+/* XL_EN[2:0] = 비트[7:5]. 데이터시트 Table 29: 000=power-down, 101=enabled.
+ * (다른 조합은 허용 안 됨) */
+#define IIS3DWB_CTRL1_XL_EN_MASK    (0x07 << 5) /**< XL_EN[2:0] 마스크 */
+#define IIS3DWB_CTRL1_XL_EN_VALUE   (0x05 << 5) /**< 101b = 가속도계 enable */
+#define IIS3DWB_CTRL1_XL_XL_EN      IIS3DWB_CTRL1_XL_EN_VALUE /**< 하위호환 */
 #define IIS3DWB_CTRL1_XL_LPF2_XL_EN (1 << 1) /**< LPF2 enable */
 
 /* Full-scale selection (bits 3:2 of CTRL1_XL) */
@@ -135,6 +139,17 @@ typedef enum {
     IIS3DWB_FIFO_CONTINUOUS     = 0x06, /**< Continuous mode */
     IIS3DWB_FIFO_BYPASS_TO_CONT = 0x07, /**< Bypass to Continuous mode */
 } iis3dwb_fifo_mode_t;
+
+/* FIFO_CTRL3 (0x09) - BDR_XL[3:0]: 가속도 배치 데이터율.
+ * 데이터시트 Table 16: 0000=미배치, 1010=26667Hz, 1011~1111 금지.
+ * IIS3DWB는 ODR 26.6kHz 고정 → FIFO BDR도 26.6kHz 단일. */
+#define IIS3DWB_BDR_DISABLED  0x00  /**< FIFO 미배치 */
+#define IIS3DWB_BDR_26667     0x0A  /**< 26667 Hz (유일 동작값) */
+
+/* FIFO 워드 = TAG(1B) + X/Y/Z(6B) = 7B */
+#define IIS3DWB_FIFO_WORD_SIZE 7
+/* 한 번의 버스트로 읽을 최대 샘플 수 (64×7=448B, SPI/DMA 안전) */
+#define IIS3DWB_FIFO_BURST_MAX 64
 
 /* ============================================================================
  * Sensitivity Values (mg/LSB)
@@ -321,6 +336,45 @@ esp_err_t iis3dwb_read_temperature(iis3dwb_handle_t *handle, float *temperature)
  *     - ESP_FAIL: Communication error
  */
 esp_err_t iis3dwb_software_reset(iis3dwb_handle_t *handle);
+
+/* ============================================================================
+ * FIFO API — 고속 스트리밍용 (26.6kHz 버스트 읽기)
+ * ============================================================================ */
+
+/**
+ * @brief FIFO를 Continuous 모드로 켜고 BDR 설정
+ *
+ * @param handle 디바이스 핸들
+ * @param bdr_code FIFO_CTRL3 BDR_XL 코드 (IIS3DWB_BDR_26667 권장)
+ * @return ESP_OK / 통신 오류
+ */
+esp_err_t iis3dwb_fifo_enable(iis3dwb_handle_t *handle, uint8_t bdr_code);
+
+/**
+ * @brief FIFO 비활성화 (Bypass 모드 = 폴링 복귀)
+ */
+esp_err_t iis3dwb_fifo_disable(iis3dwb_handle_t *handle);
+
+/**
+ * @brief FIFO에 쌓인 샘플(워드) 개수 읽기 (FIFO_STATUS1/2 DIFF_FIFO)
+ *
+ * @param handle 디바이스 핸들
+ * @param count 적재된 워드 수 출력 (0~512)
+ * @return ESP_OK / 통신 오류
+ */
+esp_err_t iis3dwb_fifo_count(iis3dwb_handle_t *handle, uint16_t *count);
+
+/**
+ * @brief FIFO에서 최대 max_samples 개를 버스트로 읽어 raw[] 채움
+ *
+ * @param handle 디바이스 핸들
+ * @param raw 출력 배열 (max_samples 크기)
+ * @param max_samples 최대 읽을 샘플 수
+ * @param out_n 실제 읽은 샘플 수 출력
+ * @return ESP_OK / 통신 오류
+ */
+esp_err_t iis3dwb_read_fifo(iis3dwb_handle_t *handle, iis3dwb_raw_data_t *raw,
+                            uint16_t max_samples, uint16_t *out_n);
 
 /**
  * @brief Read single register

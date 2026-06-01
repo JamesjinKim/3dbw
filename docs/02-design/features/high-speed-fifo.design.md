@@ -4,6 +4,8 @@
 - **Plan**: [[high-speed-fifo.plan]]
 - **작성일**: 2026-06-01
 - **방향**: 옵션 A 하이브리드 — `rate_step`으로 폴링/FIFO 자동 전환
+- **CPU 부하**: 현장 요구로 "부하 감소" 필요. **INT 핀 미연결(SPI+UART만 사용)** →
+  하드웨어 인터럽트 불가 → **Watermark 기반 효율 폴링**으로 부하 절감 (아래 8장)
 
 ## 1. 아키텍처
 
@@ -34,14 +36,23 @@ esp_err_t iis3dwb_fifo_disable(iis3dwb_handle_t *h);
 - `FIFO_CTRL4`(0x0A): 모드 = `IIS3DWB_FIFO_CONTINUOUS`(0x06).
   - continuous: FIFO가 가득 차면 오래된 샘플을 덮어씀 → 스트리밍에 적합.
 
-**BDR 코드 (FIFO_CTRL3[3:0], 데이터시트 기준 — 구현 시 재확인 필수)**
-| rate_step | 목표 | BDR 코드(예상) | 비고 |
-|-----------|------|----------------|------|
-| 1 | 3.3 kHz | 0b0111 (?) | 데이터시트 표로 확정 |
-| 2 | 6.6 kHz | 0b1000 (?) | 〃 |
-| 3 | 13.3 kHz | 0b1001 (?) | 〃 |
-| 4 | 26.6 kHz | 0b1010 (=full ODR) | 최대 |
-> ⚠️ Do 단계 첫 작업: 데이터시트 FIFO_CTRL3 BDR 표에서 정확한 코드 확정 후 매핑 함수 작성.
+**[데이터시트 확정 — Table 16] BDR_XL[3:0]은 두 값만 허용:**
+- `0000` = 미배치, **`1010` = 26667 Hz (유일 동작값)**, `1011~1111` 금지.
+- → **FIFO BDR은 26.6kHz 단일.** 중간 단계(3.3k/6.6k/13.3k)는 하드웨어에 없음.
+  (IIS3DWB는 초광대역 진동센서로 ODR=26.6kHz 고정)
+
+**결정: FIFO 26.6kHz + 소프트웨어 데시메이션**
+FIFO는 항상 26.6kHz로 적재·읽되, 펌웨어가 **N개당 1개만 링버퍼에 적재**하여 5단계를 표현:
+
+| rate_step | 목표 레이트 | 데시메이션(N) | FIFO BDR |
+|-----------|------------|---------------|----------|
+| 0 | 1 kHz | (폴링, FIFO 미사용) | - |
+| 1 | 3.3 kHz | 8 (26667/8≈3333) | 1010 |
+| 2 | 6.6 kHz | 4 (26667/4≈6667) | 1010 |
+| 3 | 13.3 kHz | 2 (26667/2≈13333) | 1010 |
+| 4 | 26.6 kHz | 1 (모두 전송) | 1010 |
+
+> FIFO_CTRL3 = `0x0A`(BDR=1010), FIFO_CTRL4 FIFO_MODE = `110`(Continuous, 가득 차면 덮어씀).
 
 ### 2.2 FIFO 적재 개수
 ```c
@@ -67,15 +78,20 @@ esp_err_t iis3dwb_read_fifo(iis3dwb_handle_t *h,
 
 ## 3. 스트리머 변경 (sensor_streamer.c)
 
-### 3.1 rate_step → BDR 매핑
+### 3.1 rate_step → 데시메이션 매핑
 ```c
-static uint8_t rate_to_bdr(uint8_t rate_step); // 위 표 기반, Do에서 확정
+static uint8_t rate_to_decim(uint8_t rate_step) {
+    switch (rate_step) { case 1: return 8; case 2: return 4;
+                         case 3: return 2; default: return 1; } // 4=1(모두)
+}
 ```
 
-### 3.2 sensor_task_fifo (신규 생산자)
+### 3.2 sensor_task_fifo (신규 생산자, 데시메이션 포함)
 ```c
 static void sensor_task_fifo(void *arg) {
-    iis3dwb_fifo_enable(s.cfg.sensor, rate_to_bdr(s.cfg.rate_step));
+    uint8_t decim = rate_to_decim(s.cfg.rate_step);  // N개당 1개 전송
+    uint32_t phase = 0;
+    iis3dwb_fifo_enable(s.cfg.sensor, IIS3DWB_BDR_26667);  // 항상 26.6kHz
     iis3dwb_raw_data_t burst[FIFO_BURST_MAX];
     while (s.running) {
         uint16_t avail = 0;
@@ -85,6 +101,7 @@ static void sensor_task_fifo(void *arg) {
         uint16_t got = 0;
         if (iis3dwb_read_fifo(s.cfg.sensor, burst, want, &got) == ESP_OK) {
             for (uint16_t i = 0; i < got; i++) {
+                if (phase++ % decim != 0) continue;     // 데시메이션
                 uint8_t sample[6];
                 memcpy(sample,   &burst[i].x, 2);
                 memcpy(sample+2, &burst[i].y, 2);
@@ -98,6 +115,8 @@ static void sensor_task_fifo(void *arg) {
     vTaskDelete(NULL);
 }
 ```
+> 데시메이션은 단순 추출(every-Nth). 안티앨리어싱 필터는 미적용 — 진동 모니터링 1차 목적엔 충분.
+> 정밀 분석이 필요하면 후속 단계에서 평균/저역통과 데시메이션 고려.
 - 폴링 한계 회피: SPI 단발 대신 묶음 읽기 → 26.6kHz도 한 번에 수십 샘플 처리.
 - FIFO가 비면 1틱 양보(타 태스크/WiFi에 CPU 양보), 차면 버스트.
 
@@ -109,6 +128,42 @@ else
     xTaskCreate(sensor_task_fifo, "strm_fifo", 4096, NULL, 6, &s.sensor_task_h);
 ```
 - 기존 `sensor_task` 함수명 유지(폴링). 패킷/전송/통계 로깅 무변경.
+
+## 3.5 CPU 부하 절감 — Watermark 효율 폴링 (INT 핀 미사용)
+
+**제약:** 현재 보드는 SPI + UART만 사용. IIS3DWB INT1 핀이 ESP32 GPIO에 미연결 →
+하드웨어 인터럽트(핀 ISR) 불가. 대신 소프트웨어로 부하를 줄인다.
+
+**문제(개선 전):** `sensor_task_fifo`가 매 루프 `fifo_count`를 SPI로 읽고, 비면 `vTaskDelay(1)`.
+→ FIFO가 빈 동안에도 1틱(10ms)마다 SPI 트랜잭션 발생 = 불필요한 부하.
+
+**개선: Watermark 만큼 쌓일 시간을 계산해 CPU 양보**
+- 목표 묶음 크기 `WTM`(예: 64샘플)을 정한다.
+- 26.6kHz에서 64샘플이 쌓이는 시간 ≈ `64 / 26667 ≈ 2.4 ms`.
+- 그 시간만큼 `vTaskDelay`로 자고, 깨어나 한 번에 버스트 읽기.
+- → SPI 호출 빈도가 "샘플당"이 아니라 "묶음당"으로 감소. CPU가 대부분 잠들어 있음.
+
+```c
+#define STREAM_WTM_SAMPLES 64
+// 1회 대기 = WTM개 쌓이는 시간 (틱 단위, 최소 1틱)
+uint32_t batch_ms = (STREAM_WTM_SAMPLES * 1000) / 26667;   // ≈2ms
+TickType_t wait = pdMS_TO_TICKS(batch_ms);
+if (wait < 1) wait = 1;
+
+while (s.running) {
+    vTaskDelay(wait);                       // WTM 쌓일 동안 CPU 양보
+    uint16_t avail = 0;
+    iis3dwb_fifo_count(s.cfg.sensor, &avail);   // 깨어나서 1번만 확인
+    while (avail > 0 && s.running) {
+        uint16_t want = avail > IIS3DWB_FIFO_BURST_MAX ? IIS3DWB_FIFO_BURST_MAX : avail;
+        ... read_fifo + 데시메이션 + 링버퍼 ...
+        avail -= got;
+    }
+}
+```
+- 효과: 빈 FIFO를 헛되이 폴링하지 않음. `fifo_count`/`read_fifo` 호출이 묶음당 1~수회로 감소.
+- (선택) FIFO_CTRL1/2에 하드웨어 WTM 임계도 설정 가능하나, INT 없이 읽으므로 시간기반 대기로 충분.
+- **향후 INT 핀이 배선되면**: 이 `vTaskDelay`를 `xSemaphoreTake`(ISR이 give)로 교체하면 진짜 인터럽트 방식으로 무손실 전환 가능 (구조 동일).
 
 ## 4. 데이터 정합성
 

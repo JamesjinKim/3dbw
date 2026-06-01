@@ -27,6 +27,10 @@ static const char *TAG = "STREAMER";
 #define RINGBUF_SIZE   (16 * 1024)
 /* 샘플 1개 = int16 x,y,z = 6바이트 */
 #define SAMPLE_BYTES   6
+/* FIFO 효율 폴링: 한 묶음 목표 샘플 수 (이만큼 쌓일 시간을 자고 깨어남).
+ * 26.6kHz에서 FIFO(512) 오버런 방지를 위해 충분히 자주 비워야 함.
+ * 32샘플 ≈ 1.2ms 주기 → 깨어날 때마다 쌓인 것 전부 버스트로 비움. */
+#define STREAM_WTM_SAMPLES  32
 
 /* 패킷 헤더 (16바이트) — 수신 프로그램과 바이트 단위로 일치해야 함 */
 typedef struct __attribute__((packed)) {
@@ -105,6 +109,77 @@ static void sensor_task(void *arg)
         }
     }
     ESP_LOGI(TAG, "센서 태스크 종료");
+    vTaskDelete(NULL);
+}
+
+/* ===================== 센서 태스크 (생산자, FIFO 고속) ===================== */
+/*
+ * rate_step >= 1 일 때 사용. 센서 FIFO(26.6kHz)를 버스트로 읽고,
+ * 소프트웨어 데시메이션(N개당 1개)으로 목표 레이트를 만든다.
+ * (IIS3DWB는 ODR/BDR이 26.6kHz 고정 → 중간 단계는 데시메이션으로 구현)
+ */
+static uint8_t rate_to_decim(uint8_t rate_step)
+{
+    switch (rate_step) {
+        case 1: return 8;   /* 26667/8 ≈ 3333 Hz */
+        case 2: return 4;   /* 26667/4 ≈ 6667 Hz */
+        case 3: return 2;   /* 26667/2 ≈ 13333 Hz */
+        default: return 1;  /* 4 = 모두 전송 (26.6kHz) */
+    }
+}
+
+static void sensor_task_fifo(void *arg)
+{
+    uint8_t decim = rate_to_decim(s.cfg.rate_step);
+    uint32_t phase = 0;
+
+    ESP_LOGI(TAG, "센서 태스크(FIFO) 시작 (26.6kHz, 데시메이션 1/%u)", decim);
+
+    if (iis3dwb_fifo_enable(s.cfg.sensor, IIS3DWB_BDR_26667) != ESP_OK) {
+        ESP_LOGE(TAG, "FIFO 활성화 실패");
+        s.running = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    iis3dwb_raw_data_t burst[IIS3DWB_FIFO_BURST_MAX];
+
+    /* 효율 폴링: WTM(묶음 크기)만큼 쌓일 시간을 자고 깨어나 묶음 처리.
+     * INT 핀 미연결 환경에서 CPU 부하를 줄임 (빈 FIFO 헛폴링 방지). */
+    uint32_t batch_ms = (STREAM_WTM_SAMPLES * 1000u) / 26667u;  /* ≈2ms */
+    TickType_t wait = pdMS_TO_TICKS(batch_ms);
+    if (wait < 1) wait = 1;
+
+    while (s.running) {
+        vTaskDelay(wait);  /* WTM 쌓일 동안 CPU 양보 (부하 절감 핵심) */
+
+        uint16_t avail = 0;
+        if (iis3dwb_fifo_count(s.cfg.sensor, &avail) != ESP_OK) {
+            continue;
+        }
+        /* 쌓인 만큼 버스트로 모두 비움 */
+        while (avail > 0 && s.running) {
+            uint16_t want = avail > IIS3DWB_FIFO_BURST_MAX ? IIS3DWB_FIFO_BURST_MAX : avail;
+            uint16_t got = 0;
+            if (iis3dwb_read_fifo(s.cfg.sensor, burst, want, &got) != ESP_OK || got == 0) {
+                break;
+            }
+            for (uint16_t i = 0; i < got; i++) {
+                if ((phase++ % decim) != 0) continue;  /* 데시메이션 */
+                uint8_t sample[SAMPLE_BYTES];
+                memcpy(&sample[0], &burst[i].x, 2);
+                memcpy(&sample[2], &burst[i].y, 2);
+                memcpy(&sample[4], &burst[i].z, 2);
+                if (xRingbufferSend(s.ringbuf, sample, SAMPLE_BYTES, 0) != pdTRUE) {
+                    s.stats.dropped++;
+                }
+            }
+            avail -= got;
+        }
+    }
+
+    iis3dwb_fifo_disable(s.cfg.sensor);
+    ESP_LOGI(TAG, "센서 태스크(FIFO) 종료");
     vTaskDelete(NULL);
 }
 
@@ -209,13 +284,19 @@ esp_err_t sensor_streamer_start(const sensor_streamer_config_t *cfg)
 
     s.running = true;
 
-    /* 태스크 생성: 센서(높은 우선순위) + 전송 */
-    xTaskCreate(sensor_task, "strm_sensor", 4096, NULL, 6, &s.sensor_task_h);
+    /* 태스크 생성: 센서(높은 우선순위) + 전송.
+     * rate_step==0 → 폴링(검증된 1kHz 경로), >=1 → FIFO 고속 버스트. */
+    if (cfg->rate_step == 0) {
+        xTaskCreate(sensor_task, "strm_sensor", 4096, NULL, 6, &s.sensor_task_h);
+    } else {
+        xTaskCreate(sensor_task_fifo, "strm_fifo", 4096, NULL, 6, &s.sensor_task_h);
+    }
     xTaskCreate(tx_task, "strm_tx", 4096, NULL, 5, &s.tx_task_h);
 
-    ESP_LOGI(TAG, "스트리밍 시작 → %s:%u (%lu Hz)",
+    ESP_LOGI(TAG, "스트리밍 시작 → %s:%u (%lu Hz, %s)",
              cfg->server_ip, cfg->server_port,
-             sensor_streamer_rate_hz(cfg->rate_step));
+             sensor_streamer_rate_hz(cfg->rate_step),
+             cfg->rate_step == 0 ? "폴링" : "FIFO");
     return ESP_OK;
 }
 

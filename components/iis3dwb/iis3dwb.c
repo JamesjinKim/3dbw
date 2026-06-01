@@ -306,10 +306,10 @@ esp_err_t iis3dwb_enable(iis3dwb_handle_t *handle, bool enable)
         return ret;
     }
 
+    /* XL_EN[2:0] 3비트를 통째로 set: enable=101b, disable=000b */
+    ctrl1_xl &= ~IIS3DWB_CTRL1_XL_EN_MASK;
     if (enable) {
-        ctrl1_xl |= IIS3DWB_CTRL1_XL_XL_EN;
-    } else {
-        ctrl1_xl &= ~IIS3DWB_CTRL1_XL_XL_EN;
+        ctrl1_xl |= IIS3DWB_CTRL1_XL_EN_VALUE;  /* 101b */
     }
 
     return iis3dwb_write_register(handle, IIS3DWB_REG_CTRL1_XL, ctrl1_xl);
@@ -426,4 +426,82 @@ esp_err_t iis3dwb_read_temperature(iis3dwb_handle_t *handle, float *temperature)
     }
 
     return ret;
+}
+
+/* ============================================================================
+ * FIFO API 구현 — 고속 스트리밍 (26.6kHz 버스트)
+ * ============================================================================ */
+
+esp_err_t iis3dwb_fifo_enable(iis3dwb_handle_t *handle, uint8_t bdr_code)
+{
+    if (!handle || !handle->initialized) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* 데이터시트 4.3.2: FIFO 리셋은 Bypass(000) 경유.
+     * 시퀀스: Bypass로 리셋 → BDR 설정 → Continuous(110) 진입 */
+    esp_err_t ret = iis3dwb_write_register(handle, IIS3DWB_REG_FIFO_CTRL4,
+                                           IIS3DWB_FIFO_BYPASS);
+    if (ret != ESP_OK) return ret;
+
+    /* FIFO_CTRL3: BDR_XL[3:0] = bdr_code (상위 비트 0) */
+    ret = iis3dwb_write_register(handle, IIS3DWB_REG_FIFO_CTRL3, bdr_code & 0x0F);
+    if (ret != ESP_OK) return ret;
+
+    /* FIFO_CTRL4: FIFO_MODE[2:0] = 110 (Continuous) */
+    ret = iis3dwb_write_register(handle, IIS3DWB_REG_FIFO_CTRL4,
+                                 IIS3DWB_FIFO_CONTINUOUS);
+    return ret;
+}
+
+esp_err_t iis3dwb_fifo_disable(iis3dwb_handle_t *handle)
+{
+    if (!handle || !handle->initialized) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* Bypass = FIFO 비활성 */
+    iis3dwb_write_register(handle, IIS3DWB_REG_FIFO_CTRL3, IIS3DWB_BDR_DISABLED);
+    return iis3dwb_write_register(handle, IIS3DWB_REG_FIFO_CTRL4, IIS3DWB_FIFO_BYPASS);
+}
+
+esp_err_t iis3dwb_fifo_count(iis3dwb_handle_t *handle, uint16_t *count)
+{
+    if (!handle || !handle->initialized || !count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t st[2];
+    /* FIFO_STATUS1(0x3A)=DIFF[7:0], FIFO_STATUS2(0x3B) bit[1:0]=DIFF[9:8] */
+    esp_err_t ret = iis3dwb_read_registers(handle, IIS3DWB_REG_FIFO_STATUS1, st, 2);
+    if (ret == ESP_OK) {
+        *count = ((uint16_t)(st[1] & 0x03) << 8) | st[0];
+    }
+    return ret;
+}
+
+esp_err_t iis3dwb_read_fifo(iis3dwb_handle_t *handle, iis3dwb_raw_data_t *raw,
+                            uint16_t max_samples, uint16_t *out_n)
+{
+    if (!handle || !handle->initialized || !raw || !out_n || max_samples == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* 워드 = TAG(1) + X/Y/Z(6) = 7바이트. 한 번에 max_samples 만큼 버스트. */
+    uint8_t buf[IIS3DWB_FIFO_WORD_SIZE * IIS3DWB_FIFO_BURST_MAX];
+    if (max_samples > IIS3DWB_FIFO_BURST_MAX) {
+        max_samples = IIS3DWB_FIFO_BURST_MAX;
+    }
+    size_t bytes = (size_t)max_samples * IIS3DWB_FIFO_WORD_SIZE;
+    esp_err_t ret = iis3dwb_read_registers(handle, IIS3DWB_REG_FIFO_DATA_OUT_TAG,
+                                           buf, bytes);
+    if (ret != ESP_OK) {
+        *out_n = 0;
+        return ret;
+    }
+    /* 각 워드: [0]=TAG, [1..2]=X(LE), [3..4]=Y, [5..6]=Z */
+    for (uint16_t i = 0; i < max_samples; i++) {
+        const uint8_t *w = &buf[i * IIS3DWB_FIFO_WORD_SIZE];
+        raw[i].x = (int16_t)(w[2] << 8 | w[1]);
+        raw[i].y = (int16_t)(w[4] << 8 | w[3]);
+        raw[i].z = (int16_t)(w[6] << 8 | w[5]);
+    }
+    *out_n = max_samples;
+    return ESP_OK;
 }
