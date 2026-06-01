@@ -67,6 +67,7 @@
     <a href="#server">6. 라즈베리파이 수신</a>
     <a href="#risk">7. 기술 리스크 (정직한 검토)</a>
     <a href="#status">8. 구현 현황 &amp; 단계</a>
+    <a href="#ratemismatch" style="color:#c92a2a"><b>9. ⚠️ 고속 설정 메뉴 vs 실제 능력 (의사결정 보류)</b></a>
   </div>
 
   <!-- 1 -->
@@ -196,6 +197,68 @@ python3 udp_receiver.py --mg --fs 4      # mg 단위 (±4g)</code></pre>
   <div class="note green">
     <b>현재 위치:</b> 1단계 구현·빌드 완료. 다음은 <b>실기기 검증</b> —
     디바이스에 라즈베리파이 IP를 설정하고, 저속(1kHz)으로 데이터가 실제 도달하는지 확인.
+  </div>
+
+  <h2 id="ratemismatch"><span class="num">9</span> ⚠️ 고속 샘플레이트 — 설정 메뉴 vs 실제 능력 불일치</h2>
+
+  <div class="note red">
+    <b>현재 문제:</b> 설정 툴(GUI)에서 <b>1k ~ 26.6kHz 5단계를 모두 선택</b>할 수 있지만,
+    펌웨어가 <b>폴링 방식</b>이라 실제로는 <b>저속(~1kHz)까지만</b> 정상 동작합니다.
+    3.3kHz 이상을 선택해도 그 속도가 나오지 않습니다. (메뉴와 실제 능력이 불일치)
+  </div>
+
+  <h3>9.1 원인 — 폴링 방식의 구조적 한계</h3>
+  <p>현재 센서 태스크는 <code>iis3dwb_read_raw_data()</code>로 <b>1샘플씩 폴링</b>하고
+  <code>vTaskDelay()</code>로 주기를 맞춥니다. FreeRTOS 틱이 <code>CONFIG_FREERTOS_HZ=100</code>
+  (1틱 = 10ms)이라 주기 제어 해상도가 거칠고, 고속에서 SPI 단발 읽기가 센서 출력을 못 따라갑니다.</p>
+
+  <table>
+    <tr><th>설정 단계</th><th>목표 레이트</th><th>샘플 주기</th><th>폴링으로 가능?</th></tr>
+    <tr><td>0</td><td>1 kHz</td><td>1000 us</td><td><span class="pill ok">실측 OK</span></td></tr>
+    <tr><td>1</td><td>3.3 kHz</td><td>300 us</td><td><span class="pill warn">불안정</span></td></tr>
+    <tr><td>2</td><td>6.6 kHz</td><td>150 us</td><td><span class="pill warn">사실상 불가</span></td></tr>
+    <tr><td>3</td><td>13.3 kHz</td><td>75 us</td><td><span class="pill warn">불가</span></td></tr>
+    <tr><td>4</td><td>26.6 kHz</td><td>37 us</td><td><span class="pill warn">불가</span></td></tr>
+  </table>
+  <p class="muted">※ 센서 ODR은 26.6kHz 고정. 폴링이 못 쫓아가면 샘플을 놓쳐(언더샘플링) 실효 레이트가 떨어집니다.</p>
+
+  <h3>9.2 진짜 해법 — FIFO 버스트 읽기 (미구현)</h3>
+  <p>IIS3DWB는 내부 <b>3KB FIFO(512샘플)</b>에 26.6kHz로 자동 적재합니다.
+  이를 <b>한 번의 SPI 버스트로 묶어 읽으면</b> 폴링 한계를 우회해 고속 전송이 가능합니다.</p>
+  <ul>
+    <li>✅ 드라이버에 <b>FIFO 레지스터 정의는 이미 존재</b> (<code>FIFO_CTRL1~4</code>, <code>FIFO_STATUS</code>, <code>FIFO_DATA_OUT</code>)</li>
+    <li>❌ 하지만 <b>FIFO를 읽는 함수는 아직 구현 안 됨</b> (<code>iis3dwb_read_fifo()</code> 없음)</li>
+    <li>❌ <code>sensor_streamer</code>도 폴링 기반 → FIFO 기반으로 교체 필요</li>
+  </ul>
+
+  <h3>9.3 의사결정 옵션 (보류 중 — 미선택)</h3>
+  <table>
+    <tr><th>옵션</th><th>내용</th><th>장점</th><th>단점</th></tr>
+    <tr>
+      <td><b>A. FIFO 구현</b><br>(2단계)</td>
+      <td>드라이버에 FIFO 버스트 읽기 추가 + 스트리머 교체</td>
+      <td>6.6k~26.6kHz 실제 달성, 메뉴가 진짜 동작</td>
+      <td>작업량 큼 (드라이버+스트리머+검증)</td>
+    </tr>
+    <tr>
+      <td><b>B. 메뉴 제한</b></td>
+      <td>GUI에서 3.3k 이상 숨김/비활성, 1kHz만 노출</td>
+      <td>메뉴-능력 불일치 즉시 해소, 안전</td>
+      <td>고속 기능은 당분간 미제공</td>
+    </tr>
+    <tr>
+      <td><b>C. 현상 유지</b><br>+ 경고</td>
+      <td>5단계 유지하되 "3.3k 이상 실험적" 안내</td>
+      <td>변경 최소, 추후 결정 여지</td>
+      <td>사용자가 고속 선택 시 오동작 혼란 가능</td>
+    </tr>
+  </table>
+
+  <div class="note blue">
+    <b>현재 상태:</b> 위 A/B/C 중 <b>아직 선택하지 않음</b>. 1단계(1kHz)는 실기기 검증 완료.
+    <br><b>판단 기준:</b> "고주파(수 kHz 이상) 진동 성분 분석이 제품 핵심 가치인가?"
+    (예: 베어링 결함, 고주파 결함 진단) → 필수면 <b>A(FIFO)</b>.
+    초기엔 저속으로 충분하다면 <b>B</b>로 정리 후 추후 A.
   </div>
 
   <footer>
