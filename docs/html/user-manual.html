@@ -165,6 +165,7 @@ IIS3DWB 초광대역 진동 센서가 측정한 가속도 데이터를 <b>USB로
 <div class="card">
   <h4 style="margin-top:0">목차</h4>
   <div class="toc">
+    <a href="#quickstart"><b>★ 빠른 시작 (처음 사용자)</b></a>
     <a href="#overview">1. 시스템 개요</a>
     <a href="#firmware">2. 센서 디바이스 (펌웨어)</a>
     <a href="#hw">2.1 하드웨어 연결 (SPI 핀맵)</a>
@@ -179,6 +180,65 @@ IIS3DWB 초광대역 진동 센서가 측정한 가속도 데이터를 <b>USB로
     <a href="#verify">6. 전체 검증 절차</a>
     <a href="#trouble">7. 문제 해결</a>
   </div>
+</div>
+
+<!-- ============ 빠른 시작 ============ -->
+<h2 id="quickstart">★ 빠른 시작 — 처음 사용자용</h2>
+<p>처음이라면 이 4단계만 따라 하면 됩니다. 어려운 설정은 모두 자동입니다.</p>
+
+<div class="flow" style="margin:18px 0">
+  <div class="box"><b>STEP 1</b>수신기 켜기 <span class="pill rpi">RPi</span></div>
+  <div class="arr">→</div>
+  <div class="box"><b>STEP 2</b>설정 툴로<br>WiFi·IP 입력 <span class="pill fw">PC</span></div>
+  <div class="arr">→</div>
+  <div class="box"><b>STEP 3</b>송수신<br>자동 확인</div>
+  <div class="arr">→</div>
+  <div class="box"><b>STEP 4</b>USB 분리<br>완료</div>
+</div>
+
+<div class="step"><span class="n">1</span>
+  <b>라즈베리파이에서 수신기 실행</b> <span class="pill rpi">라즈베리파이</span><br>
+  <span class="kvs">터미널에서 아래를 실행하면, 화면에 <b>라즈베리파이 IP</b>가 표시됩니다. 이 IP를 메모해 두세요.</span>
+  <pre style="margin-top:8px"><code>git clone https://github.com/JamesjinKim/3dbw.git
+cd 3dbw/rpi-receiver
+chmod +x run.sh
+./run.sh        # → "이 라즈베리파이 IP : 192.168.0.37" 표시됨</code></pre>
+</div>
+
+<div class="step"><span class="n">2</span>
+  <b>PC에서 설정 툴 실행 → 디바이스 연결 → WiFi·서버 입력</b> <span class="pill fw">PC + 디바이스</span><br>
+  <span class="kvs">센서를 USB로 PC에 연결하고, 설정 툴(앱)을 엽니다. 아래 5가지를 입력하고 <b>「저장 &amp; 송수신 확인」</b>을 누릅니다.</span>
+  <table style="margin-top:8px">
+    <tr><th>입력 항목</th><th>예시</th><th>설명</th></tr>
+    <tr><td>WiFi 이름 (SSID)</td><td>MyWiFi-2.4G</td><td>2.4GHz WiFi만 가능</td></tr>
+    <tr><td>비밀번호</td><td>********</td><td>WiFi 비밀번호</td></tr>
+    <tr><td><b>라즈베리파이 IP</b></td><td>192.168.0.37</td><td>STEP 1에서 메모한 IP</td></tr>
+    <tr><td>포트</td><td>9000</td><td>그대로 두면 됩니다</td></tr>
+    <tr><td>샘플레이트</td><td>1 kHz</td><td>그대로 두면 됩니다</td></tr>
+  </table>
+</div>
+
+<div class="step"><span class="n">3</span>
+  <b>송수신 자동 확인 (기다리기만)</b><br>
+  <span class="kvs">설정 툴이 자동으로 ① 설정 저장 → ② WiFi 연결 → ③ 데이터 전송 시작까지 확인합니다 (최대 75초).
+  완료되면 <b>「전체 설정 완료! · 데이터 송수신 ✓ 전송 시작됨」</b>이 표시됩니다.</span>
+</div>
+
+<div class="step"><span class="n">4</span>
+  <b>USB 분리 → 전력용 USB로 사용</b><br>
+  <span class="kvs">설정이 끝나면 PC에서 USB를 빼고, <b>전원 어댑터(전력용 USB)</b>에 연결하세요.
+  설정은 디바이스에 영구 저장되어 있어, 전원만 들어오면 자동으로 다시 동작합니다.</span>
+</div>
+
+<div class="ok">
+<b>✓ 한 번 설정하면 끝!</b> 이후에는 <b>전원만 공급</b>하면 사람이 아무것도 하지 않아도
+디바이스가 스스로 WiFi에 연결되고 진동 데이터를 라즈베리파이로 보냅니다.
+</div>
+
+<div class="note">
+<b>USB를 바꾸는 동안 데이터가 잠깐 끊겨도 정상입니다.</b> 전원이 끊기면 디바이스도 꺼지지만,
+새 전원이 들어오면 <b>약 4초 안에</b> 자동으로 WiFi 재연결 → 데이터 전송이 재개됩니다.
+<br><span class="kvs">※ 전원 어댑터는 5V / 1A 이상 안정적인 것을 권장합니다. (WiFi 전송 시 순간 전류 소모가 큽니다)</span>
 </div>
 
 <!-- ============ 펌웨어 ============ -->
@@ -285,8 +345,8 @@ IIS3DWB 초광대역 진동 센서가 측정한 가속도 데이터를 <b>USB로
         <input class="gui-input" value="9000" style="flex:1">
       </div>
       <label class="gui-label">샘플레이트 <span class="map">→ stream_rate</span></label>
-      <select class="gui-input"><option>0 — 1 kHz (기본)</option></select>
-      <button class="gui-btn">저장 &amp; 연결 확인</button>
+      <select class="gui-input"><option>1 kHz (기본)</option></select>
+      <button class="gui-btn">저장 &amp; 송수신 확인</button>
     </div>
   </div>
 
@@ -297,19 +357,20 @@ IIS3DWB 초광대역 진동 센서가 측정한 가속도 데이터를 <b>USB로
     <div class="gui-body">
       <div class="gui-steps"><span class="gs done">① 연결</span><span class="gs done">② WiFi 입력</span><span class="gs active">③ 완료</span></div>
       <div class="gui-done">✓</div>
-      <div class="gui-h" style="text-align:center">설정 완료! &amp; WiFi 연결됨</div>
+      <div class="gui-h" style="text-align:center">전체 설정 완료!</div>
       <div class="gui-result">
         <div><span>펌웨어</span><b>v1.0.0</b></div>
         <div><span>WiFi</span><b>MyWiFi-2.4G</b></div>
         <div><span>IP 주소</span><b>192.168.0.225</b></div>
-        <div><span>서버</span><b>192.168.0.37:9000</b></div>
+        <div><span>수신 서버</span><b>192.168.0.37:9000</b></div>
+        <div><span>데이터 송수신</span><b style="color:#28a745">✓ 전송 시작됨</b></div>
       </div>
-      <div class="gui-desc" style="text-align:center">이제 USB를 분리해도 전원만 넣으면 자동 연결됩니다.</div>
+      <div class="gui-desc" style="text-align:center">USB를 분리해도 전원만 넣으면 자동으로 데이터를 전송합니다.</div>
       <button class="gui-btn ghost">다른 디바이스 설정</button>
     </div>
   </div>
 </div>
-<div class="kvs" style="text-align:center;margin-top:-4px">▲ 설정 툴 화면 예시 (실제 동작 화면이 아닌 설명용 목업). 입력값이 자동으로 NVS 키에 매핑됩니다.</div>
+<div class="kvs" style="text-align:center;margin-top:-4px">▲ 실제 설정 툴 화면 구성. 입력값이 자동으로 NVS 키에 저장되고, ③에서 데이터 전송 시작까지 확인합니다.</div>
 
 <!-- ============ 라즈베리파이 ============ -->
 <h2 id="rpi">3. 라즈베리파이 수신 서버 <span class="pill rpi">라즈베리파이</span></h2>
