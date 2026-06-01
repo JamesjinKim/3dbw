@@ -447,14 +447,16 @@ PORT=9001 ./run.sh       # 포트 변경</code></pre>
 <h2 id="rate">5. 샘플레이트 단계</h2>
 <p>NVS의 <code>stream_rate</code> 값으로 전송 속도를 5단계로 설정합니다.</p>
 <table>
-  <tr><th>stream_rate</th><th>샘플레이트</th><th>상태</th></tr>
-  <tr><td><code>0</code></td><td>1 kHz</td><td><span style="color:var(--green)">✅ 검증 완료 (기본, 1단계)</span></td></tr>
-  <tr><td><code>1</code></td><td>3.3 kHz</td><td><span style="color:var(--amber)">2단계 (FIFO) 예정</span></td></tr>
-  <tr><td><code>2</code></td><td>6.6 kHz</td><td><span style="color:var(--amber)">2단계 예정</span></td></tr>
-  <tr><td><code>3</code></td><td>13.3 kHz</td><td><span style="color:var(--amber)">2단계 예정</span></td></tr>
-  <tr><td><code>4</code></td><td>26.6 kHz</td><td><span style="color:var(--amber)">2단계 (최대) 예정</span></td></tr>
+  <tr><th>stream_rate</th><th>샘플레이트</th><th>방식</th><th>상태</th></tr>
+  <tr><td><code>0</code></td><td>1 kHz</td><td>폴링</td><td><span style="color:var(--green)">✅ 검증 완료 (기본)</span></td></tr>
+  <tr><td><code>1</code></td><td>3.3 kHz</td><td>FIFO + 1/8 데시메이션</td><td><span style="color:var(--green)">✅ 지원</span></td></tr>
+  <tr><td><code>2</code></td><td>6.6 kHz</td><td>FIFO + 1/4 데시메이션</td><td><span style="color:var(--green)">✅ 지원</span></td></tr>
+  <tr><td><code>3</code></td><td>13.3 kHz</td><td>FIFO + 1/2 데시메이션</td><td><span style="color:var(--green)">✅ 지원</span></td></tr>
+  <tr><td><code>4</code></td><td>26.6 kHz</td><td>FIFO (전체)</td><td><span style="color:var(--green)">✅ 검증 완료 (최대)</span></td></tr>
 </table>
-<div class="warn"><b>현재 1단계는 폴링 방식</b>이라 1 kHz까지 안정적입니다. 3.3 kHz 이상 고속 전송은 센서 내장 FIFO 묶음 읽기(2단계) 구현 후 지원됩니다.</div>
+<div class="ok"><b>전 단계 지원.</b> <code>stream_rate</code>를 0으로 두면 저속(폴링 1kHz), 1~4면 센서 내장
+FIFO를 묶음으로 읽어 고속 전송합니다. 최대 26.6kHz까지 실기기에서 무손실 전송 검증 완료.
+사용자는 속도만 고르면 펌웨어가 방식을 자동 전환합니다.</div>
 
 <!-- ============ 검증 ============ -->
 <h2 id="verify">6. 전체 검증 절차</h2>

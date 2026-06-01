@@ -67,7 +67,7 @@
     <a href="#server">6. 라즈베리파이 수신</a>
     <a href="#risk">7. 기술 리스크 (정직한 검토)</a>
     <a href="#status">8. 구현 현황 &amp; 단계</a>
-    <a href="#ratemismatch" style="color:#c92a2a"><b>9. ⚠️ 고속 설정 메뉴 vs 실제 능력 (의사결정 보류)</b></a>
+    <a href="#ratemismatch" style="color:var(--green)"><b>9. ✅ 고속 설정 메뉴 vs 실제 능력 (해결됨)</b></a>
   </div>
 
   <!-- 1 -->
@@ -186,25 +186,34 @@ python3 udp_receiver.py --mg --fs 4      # mg 단위 (±4g)</code></pre>
   <table>
     <tr><th>단계</th><th>내용</th><th>상태</th></tr>
     <tr><td>설계</td><td>Plan + Design 문서 (PDCA)</td><td><span class="pill ok">완료</span></td></tr>
-    <tr><td>1단계</td><td>NVS 설정 + UDP 전송 + 저속(1kHz) + 수신기</td><td><span class="pill ok">구현·빌드</span></td></tr>
-    <tr><td>실기기 검증</td><td>라즈베리파이로 실제 수신 확인</td><td><span class="pill warn">대기</span></td></tr>
-    <tr><td>2단계</td><td>FIFO 읽기 → 중·고속 (6.6k~26.6kHz)</td><td><span class="pill warn">예정</span></td></tr>
-    <tr><td>3단계</td><td>안정화 (유실/재연결/장시간), 26.6kHz 한계 확인</td><td><span class="pill warn">예정</span></td></tr>
-    <tr><td>설정 툴 연동</td><td>GUI에서 서버IP/레이트 설정 주입</td><td><span class="pill warn">예정</span></td></tr>
+    <tr><td>1단계</td><td>NVS 설정 + UDP 전송 + 저속(1kHz) + 수신기</td><td><span class="pill ok">완료·검증</span></td></tr>
+    <tr><td>실기기 검증(저속)</td><td>라즈베리파이로 1kHz 수신 확인</td><td><span class="pill ok">완료</span></td></tr>
+    <tr><td>설정 툴 연동</td><td>GUI에서 WiFi+서버IP+레이트 주입 (write_config)</td><td><span class="pill ok">완료</span></td></tr>
+    <tr><td>2단계 (고속)</td><td>FIFO 버스트 읽기 → 26.6kHz + 데시메이션(1~4단계)</td><td><span class="pill ok">완료·검증</span></td></tr>
+    <tr><td>고속 실기기 검증</td><td>26,760Hz 송신, 드롭0/에러0 확인</td><td><span class="pill ok">완료</span></td></tr>
+    <tr><td>3단계 (잔여)</td><td>데시메이션 1~3 실측 + 라즈베리파이 26.6kHz 유실률</td><td><span class="pill warn">진행</span></td></tr>
+    <tr><td>(선택) 하드웨어 INT</td><td>INT 핀 배선 시 세마포어 방식 전환</td><td><span class="pill warn">선택</span></td></tr>
     <tr><td>(선택) TCP</td><td>신뢰성 필요 시 transport 전환</td><td><span class="pill warn">선택</span></td></tr>
   </table>
 
   <div class="note green">
-    <b>현재 위치:</b> 1단계 구현·빌드 완료. 다음은 <b>실기기 검증</b> —
-    디바이스에 라즈베리파이 IP를 설정하고, 저속(1kHz)으로 데이터가 실제 도달하는지 확인.
+    <b>현재 위치:</b> 저속(1kHz)·고속(26.6kHz FIFO) 모두 구현·실기기 검증 완료. GUI 설정 툴 연동도 완료.
+    잔여는 데시메이션 중간단계(3.3k/6.6k/13.3k) 실측과 WiFi 구간 유실률 측정.
+    상세 개선 내역은 <code>docs/html/high-speed-fifo-report.html</code> 참고.
   </div>
 
-  <h2 id="ratemismatch"><span class="num">9</span> ⚠️ 고속 샘플레이트 — 설정 메뉴 vs 실제 능력 불일치</h2>
+  <h2 id="ratemismatch"><span class="num">9</span> 고속 샘플레이트 — 설정 메뉴 vs 실제 능력 (✅ 해결됨)</h2>
 
-  <div class="note red">
-    <b>현재 문제:</b> 설정 툴(GUI)에서 <b>1k ~ 26.6kHz 5단계를 모두 선택</b>할 수 있지만,
-    펌웨어가 <b>폴링 방식</b>이라 실제로는 <b>저속(~1kHz)까지만</b> 정상 동작합니다.
-    3.3kHz 이상을 선택해도 그 속도가 나오지 않습니다. (메뉴와 실제 능력이 불일치)
+  <div class="note green">
+    <b>✅ 해결 완료 (2026-06-01):</b> 아래 9.1~9.3은 <b>당시 문제 상황과 의사결정 과정</b>을 기록한 것입니다.
+    이후 <b>FIFO 버스트 읽기 구현</b>으로 <b>26.6kHz까지 실기기 무손실 달성</b>(드롭0). 메뉴-능력 불일치는 해소됐습니다.
+    상세 개선 내역: <code>docs/html/high-speed-fifo-report.html</code>.
+  </div>
+
+  <div class="note amber">
+    <b>[당시 문제]</b> 설정 툴(GUI)에서 <b>1k ~ 26.6kHz 5단계를 모두 선택</b>할 수 있지만,
+    펌웨어가 <b>폴링 방식</b>이라 실제로는 <b>저속(~1kHz)까지만</b> 동작했음.
+    (메뉴와 실제 능력 불일치 → 아래 과정으로 해결)
   </div>
 
   <h3>9.1 원인 — 폴링 방식의 구조적 한계</h3>
@@ -222,16 +231,17 @@ python3 udp_receiver.py --mg --fs 4      # mg 단위 (±4g)</code></pre>
   </table>
   <p class="muted">※ 센서 ODR은 26.6kHz 고정. 폴링이 못 쫓아가면 샘플을 놓쳐(언더샘플링) 실효 레이트가 떨어집니다.</p>
 
-  <h3>9.2 진짜 해법 — FIFO 버스트 읽기 (미구현)</h3>
+  <h3>9.2 채택한 해법 — FIFO 버스트 읽기 (✅ 구현 완료)</h3>
   <p>IIS3DWB는 내부 <b>3KB FIFO(512샘플)</b>에 26.6kHz로 자동 적재합니다.
-  이를 <b>한 번의 SPI 버스트로 묶어 읽으면</b> 폴링 한계를 우회해 고속 전송이 가능합니다.</p>
+  이를 <b>한 번의 SPI 버스트로 묶어 읽어</b> 폴링 한계를 우회 → 고속 전송 달성.</p>
   <ul>
-    <li>✅ 드라이버에 <b>FIFO 레지스터 정의는 이미 존재</b> (<code>FIFO_CTRL1~4</code>, <code>FIFO_STATUS</code>, <code>FIFO_DATA_OUT</code>)</li>
-    <li>❌ 하지만 <b>FIFO를 읽는 함수는 아직 구현 안 됨</b> (<code>iis3dwb_read_fifo()</code> 없음)</li>
-    <li>❌ <code>sensor_streamer</code>도 폴링 기반 → FIFO 기반으로 교체 필요</li>
+    <li>✅ 드라이버 FIFO 레지스터 정의 (<code>FIFO_CTRL1~4</code>, <code>FIFO_STATUS</code>, <code>FIFO_DATA_OUT</code>)</li>
+    <li>✅ <b>FIFO 읽기 함수 구현 완료</b> (<code>iis3dwb_fifo_enable/count/read_fifo</code>, 7B 워드 버스트)</li>
+    <li>✅ <code>sensor_streamer</code>에 <code>sensor_task_fifo</code> 추가 (rate_step 분기)</li>
+    <li>⚙️ 구현 중 발견·수정: <b>CTRL1_XL XL_EN 비트 버그</b>(100b→101b)가 FIFO 미적재 원인이었음</li>
   </ul>
 
-  <h3>9.3 의사결정 옵션 (보류 중 — 미선택)</h3>
+  <h3>9.3 의사결정 옵션 (당시 검토 → A 선택)</h3>
   <table>
     <tr><th>옵션</th><th>내용</th><th>장점</th><th>단점</th></tr>
     <tr style="background:rgba(77,171,247,.16)">
@@ -282,9 +292,11 @@ python3 udp_receiver.py --mg --fs 4      # mg 단위 (±4g)</code></pre>
   </ul>
   <p class="muted">신규 구현: <code>iis3dwb_fifo_enable()</code> + <code>iis3dwb_read_fifo()</code>(STATUS로 적재수 확인→DATA_OUT 버스트) + <code>sensor_task_fifo()</code> + start()의 rate_step 분기.</p>
 
-  <div class="note blue">
-    <b>현재 상태:</b> 옵션 <b>A(하이브리드)로 방향 확정</b> → 별도 PDCA(<code>high-speed-fifo</code>)로 구현 계획 진행.
-    1단계(1kHz)는 실기기 검증 완료, 저속 경로는 그대로 보존됩니다.
+  <div class="note green">
+    <b>✅ 결과:</b> 옵션 <b>A(하이브리드)</b> 선택·구현 완료. <code>high-speed-fifo</code> PDCA로 진행하여
+    <b>26.6kHz 실기기 무손실 달성</b>(드롭0/에러0). 저속(1kHz) 폴링 경로는 그대로 보존.
+    <br>단, INT 핀 미연결(SPI+UART만)로 <b>하드웨어 인터럽트 대신 Watermark 효율 폴링</b>으로 CPU 부하를 줄임.
+    상세: <code>docs/html/high-speed-fifo-report.html</code>.
   </div>
 
   <footer>
