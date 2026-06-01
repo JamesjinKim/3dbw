@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>고속 FIFO 스트리밍 개선 보고서 — 폴링 → 26.6kHz</title>
+<style>
+  :root{
+    --bg:#0f1419; --card:#1a212b; --card2:#212a36;
+    --line:#2d3a48; --txt:#e6edf3; --muted:#9bb0c4; --accent:#4ea1ff;
+    --green:#3fb950; --amber:#d29922; --red:#f85149; --purple:#bc8cff; --mono:"SF Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","Noto Sans KR",sans-serif;
+    background:var(--bg);color:var(--txt);line-height:1.75;font-size:15px}
+  .wrap{max-width:1000px;margin:0 auto;padding:0 24px 80px}
+  header{background:linear-gradient(135deg,#16314f,#0f1419);padding:46px 24px 38px;border-bottom:1px solid var(--line)}
+  h1{font-size:27px;margin:0 0 8px}
+  header p{margin:0;color:#cfe2ff;font-size:15px}
+  .badge{display:inline-block;background:#ffffff14;border:1px solid var(--line);color:var(--muted);
+    font-size:12px;padding:3px 10px;border-radius:20px;margin:10px 6px 0 0}
+  .badge.ok{border-color:var(--green);color:var(--green)}
+  h2{font-size:21px;margin:46px 0 14px;padding-bottom:10px;border-bottom:2px solid var(--accent)}
+  h3{font-size:17px;margin:26px 0 10px;color:var(--accent)}
+  p{color:#d4d9e0}
+  code{font-family:var(--mono);background:var(--card2);padding:2px 7px;border-radius:5px;font-size:13px;color:#ffd8a8}
+  pre{background:#0d1117;border:1px solid var(--line);border-radius:10px;padding:14px;overflow-x:auto;font-size:12.5px;color:#c9d1d9;font-family:var(--mono)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--card2);color:var(--accent);font-weight:600}
+  .big{font-size:15px}
+  .note{border-left:4px solid var(--accent);background:#16314f44;padding:12px 16px;border-radius:0 8px 8px 0;margin:14px 0}
+  .note.green{border-left-color:var(--green);background:#3fb95018}
+  .note.amber{border-left-color:var(--amber);background:#d2992218}
+  .note.red{border-left-color:var(--red);background:#f8514918}
+  .pill{font-size:12px;padding:2px 9px;border-radius:6px;font-weight:600}
+  .pill.before{background:#f8514922;color:var(--red)}
+  .pill.after{background:#3fb95022;color:var(--green)}
+  .metric{display:flex;gap:16px;flex-wrap:wrap;margin:18px 0}
+  .metric .m{flex:1;min-width:150px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;text-align:center}
+  .metric .m .v{font-size:26px;font-weight:800;color:var(--green)}
+  .metric .m .v.old{color:var(--muted);font-size:18px;text-decoration:line-through}
+  .metric .m .l{font-size:12px;color:var(--muted);margin-top:4px}
+  .arrow{text-align:center;color:var(--green);font-size:20px}
+  footer{color:var(--muted);font-size:13px;text-align:center;margin-top:56px;padding-top:20px;border-top:1px solid var(--line)}
+  .muted{color:var(--muted)}
+  .toc{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 20px;margin:18px 0}
+  .toc a{color:var(--muted);text-decoration:none;display:inline-block;margin:3px 14px 3px 0;font-size:14px}
+  .toc a:hover{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ 고속 FIFO 스트리밍 개선 보고서</h1>
+  <p>1샘플 폴링(~1kHz) → FIFO 버스트(26.6kHz) — 이전 대비 무엇이 나아졌나</p>
+  <div>
+    <span class="badge ok">실기기 검증 완료</span>
+    <span class="badge">26,760 Hz 달성</span>
+    <span class="badge">드롭 0 / 에러 0</span>
+    <span class="badge">ESP32-S3 · IIS3DWB</span>
+  </div>
+</header>
+
+<div class="wrap">
+
+<div class="toc">
+  <b>목차</b><br>
+  <a href="#summary">1. 한눈 요약</a>
+  <a href="#before">2. 이전 방식의 한계</a>
+  <a href="#fixes">3. 개선 3가지</a>
+  <a href="#bug">4. 핵심 버그 발견</a>
+  <a href="#load">5. CPU 부하 (현장 요구)</a>
+  <a href="#hybrid">6. 하이브리드 동작</a>
+  <a href="#result">7. 검증 결과</a>
+</div>
+
+<!-- 1 -->
+<h2 id="summary">1. 한눈 요약</h2>
+<div class="metric">
+  <div class="m"><div class="v old">~1 kHz</div><div class="l">이전 (1샘플 폴링)</div></div>
+  <div class="m"><div class="v">26,760 Hz</div><div class="l">개선 후 (FIFO 버스트)</div></div>
+  <div class="m"><div class="v">×26</div><div class="l">처리량 향상</div></div>
+  <div class="m"><div class="v">0%</div><div class="l">유실 (드롭·에러)</div></div>
+</div>
+<p class="big">진동센서의 전체 대역폭(26.6kHz)을 손실 없이 무선 전송할 수 있게 되었습니다.
+이전에는 폴링 한계로 1kHz가 최대였습니다.</p>
+
+<!-- 2 -->
+<h2 id="before">2. 이전 방식의 한계 (1샘플 폴링)</h2>
+<p>기존 <code>sensor_task</code>는 <b>1샘플씩 읽고 <code>vTaskDelay</code>로 대기</b>하는 폴링 방식이었습니다.</p>
+<pre>while (running) {
+    iis3dwb_read_raw_data(&raw);   // 1샘플 읽기
+    vTaskDelay(period);            // 주기 대기 ← 병목
+}</pre>
+<table>
+  <tr><th>문제</th><th>원인</th><th>결과</th></tr>
+  <tr><td>1kHz 이상 불가</td><td><code>vTaskDelay</code>가 틱(10ms) 단위 → 정밀 주기 제어 불가</td><td>3.3k~26.6kHz 선택해도 미동작</td></tr>
+  <tr><td>샘플 누락</td><td>SPI 단발 읽기가 센서 ODR(26.6kHz)을 못 따라감</td><td>언더샘플링</td></tr>
+  <tr><td>메뉴-능력 불일치</td><td>GUI는 5단계 노출하나 펌웨어가 못 냄</td><td>사용자 혼란</td></tr>
+</table>
+
+<!-- 3 -->
+<h2 id="fixes">3. 개선 3가지 — 숨은 병목을 차례로 해소</h2>
+<p>고속화 과정에서 <b>3개의 독립적 병목</b>을 순서대로 발견·해결했습니다.</p>
+
+<h3>① FIFO 버스트 읽기 도입</h3>
+<p>센서 내장 <b>FIFO(512샘플)</b>가 26.6kHz로 자동 적재 → 펌웨어는 쌓인 수십 개를
+<b>한 번의 SPI 버스트로 묶어</b> 읽습니다. 타이밍은 센서가 책임지므로 폴링의 정밀도 한계가 사라집니다.</p>
+<pre>fifo_count(&avail);              // 쌓인 개수 확인
+read_fifo(burst, avail, &got);   // 묶음으로 한 번에 읽기 (7B/샘플)</pre>
+
+<h3>② FreeRTOS 틱 100Hz → 1000Hz</h3>
+<table>
+  <tr><th></th><th class="pill before">이전</th><th class="pill after">개선</th></tr>
+  <tr><td><code>CONFIG_FREERTOS_HZ</code></td><td>100 (1틱=10ms)</td><td>1000 (1틱=1ms)</td></tr>
+  <tr><td>FIFO 비우기 주기</td><td>10ms (266샘플씩 — FIFO 오버런)</td><td>1ms (27샘플씩 — 여유)</td></tr>
+</table>
+
+<h3>③ SPI 클럭 1MHz → 8MHz</h3>
+<div class="note amber">
+<b>처리량 계산:</b> FIFO 워드 = 7바이트(TAG 1 + XYZ 6). 26.6kHz × 7B = <b>1.49 Mbps</b> 필요.<br>
+SPI 1MHz로는 못 따라감(병목) → <b>8MHz</b>로 상향하여 26.6kHz 완전 달성. (IIS3DWB 최대 10MHz)
+</div>
+
+<!-- 4 -->
+<h2 id="bug">4. 핵심 버그 발견 — 가속도계 enable 비트</h2>
+<div class="note red">
+<b>가장 결정적인 수정.</b> FIFO를 켜도 데이터가 전혀 안 쌓이던(<code>avail=0</code>) 근본 원인이었습니다.
+</div>
+<p>데이터시트 Table 29: 가속도계 enable은 <code>CTRL1_XL</code>의 <b>XL_EN[2:0] = 101b</b> 여야 합니다.
+그런데 기존 코드는 <b>비트 7만(100b)</b> 설정했습니다.</p>
+<table>
+  <tr><th></th><th class="pill before">이전 (버그)</th><th class="pill after">수정</th></tr>
+  <tr><td>XL_EN 비트</td><td><code>(1&lt;&lt;7)</code> = 100b</td><td><code>(0x05&lt;&lt;5)</code> = 101b</td></tr>
+  <tr><td>출력 레지스터 읽기</td><td>동작함 (그래서 못 발견)</td><td>동작</td></tr>
+  <tr><td>FIFO 적재</td><td><b>안 됨</b> (트리거 실패)</td><td><b>정상</b></td></tr>
+</table>
+<p class="muted">※ 100b 상태에서도 일반 출력 레지스터는 값을 내보내 1kHz 폴링은 멀쩡해 보였습니다.
+FIFO 배치는 정확한 101b에서만 트리거되어, 고속 구현 중에야 드러난 잠복 버그였습니다.</p>
+
+<!-- 5 -->
+<h2 id="load">5. CPU 부하 — 현장 요구 반영</h2>
+<p>현장에서 <b>"폴링보다 부하가 덜한 방식"</b>을 요구했습니다. 다만 현재 보드는 <b>SPI + UART만 사용</b>하고
+IIS3DWB의 INT 핀이 ESP32 GPIO에 연결돼 있지 않아 <b>하드웨어 인터럽트는 불가</b>합니다.</p>
+
+<div class="note green">
+<b>해결: Watermark 기반 효율 폴링</b><br>
+FIFO에 일정량 쌓일 시간만큼 <code>vTaskDelay</code>로 <b>CPU를 양보(잠듦)</b>하고, 깨어나 한 번에 묶음 읽기.
+→ 빈 FIFO를 헛되이 확인하지 않아 부하가 크게 줄어듭니다. INT 핀 없이 부하 절감 달성.
+</div>
+<table>
+  <tr><th>방식</th><th>INT 핀</th><th>26.6kHz</th><th>CPU 부하</th></tr>
+  <tr><td>1샘플 폴링 (이전)</td><td>불필요</td><td>❌</td><td>나쁨</td></tr>
+  <tr><td><b>FIFO 효율 폴링 (현재)</b></td><td>불필요</td><td>✅ 달성</td><td>낮음</td></tr>
+  <tr><td>FIFO + 하드웨어 INT</td><td><b>배선 필요</b></td><td>◎</td><td>가장 낮음</td></tr>
+</table>
+<p class="muted">※ 향후 INT 핀이 배선되면 <code>vTaskDelay</code>를 세마포어(ISR이 신호)로 교체해
+구조 변경 없이 진짜 인터럽트 방식으로 전환 가능하도록 설계해 두었습니다.</p>
+
+<!-- 6 -->
+<h2 id="hybrid">6. 하이브리드 동작 — 검증된 저속 보존</h2>
+<p><code>rate_step</code> 하나로 방식이 자동 전환됩니다. 사용자는 속도만 고르면 됩니다.</p>
+<table>
+  <tr><th>rate_step</th><th>속도</th><th>방식</th><th>데시메이션</th></tr>
+  <tr><td>0</td><td>1 kHz</td><td>폴링 (기존, 무변경)</td><td>-</td></tr>
+  <tr><td>1</td><td>3.3 kHz</td><td>FIFO 26.6kHz</td><td>1/8</td></tr>
+  <tr><td>2</td><td>6.6 kHz</td><td>FIFO 26.6kHz</td><td>1/4</td></tr>
+  <tr><td>3</td><td>13.3 kHz</td><td>FIFO 26.6kHz</td><td>1/2</td></tr>
+  <tr><td>4</td><td>26.6 kHz</td><td>FIFO 26.6kHz</td><td>1/1 (전부)</td></tr>
+</table>
+<div class="note">
+IIS3DWB는 ODR/BDR이 26.6kHz 고정(데이터시트 확인). 중간 단계는 펌웨어 <b>소프트웨어 데시메이션</b>
+(N개당 1개 전송)으로 구현. 검증된 1kHz 폴링 경로는 <b>건드리지 않아 회귀 위험 0</b>.
+</div>
+
+<!-- 7 -->
+<h2 id="result">7. 검증 결과 (실기기)</h2>
+<table>
+  <tr><th>항목</th><th>측정값</th><th>판정</th></tr>
+  <tr><td>송신 레이트 (rate_step=4)</td><td><b>26,760 Hz</b> (10초당 267,600샘플)</td><td><span style="color:var(--green)">✅ 목표 26,667Hz +0.3%</span></td></tr>
+  <tr><td>드롭</td><td>0</td><td><span style="color:var(--green)">✅</span></td></tr>
+  <tr><td>전송 에러</td><td>0</td><td><span style="color:var(--green)">✅</span></td></tr>
+  <tr><td>안정성</td><td>일정 레이트 유지, 크래시 없음</td><td><span style="color:var(--green)">✅</span></td></tr>
+  <tr><td>저속 회귀 (rate_step=0)</td><td>기존 1kHz 폴링 그대로</td><td><span style="color:var(--green)">✅</span></td></tr>
+</table>
+<pre>I (13860) MAIN: [스트리밍] 패킷=1338 샘플=267600 드롭=0 에러=0
+I (23861) MAIN: [스트리밍] 패킷=2672 샘플=534400 드롭=0 에러=0</pre>
+
+<div class="note amber">
+<b>남은 검증:</b> ① rate_step 1~3(데시메이션) 실측 ② 라즈베리파이 수신 측 26.6kHz WiFi 구간 유실률.
+디바이스 송신은 26.6kHz 무손실 확정.
+</div>
+
+<footer>
+  IIS3DWB 고속 FIFO 스트리밍 개선 보고서<br>
+  근거: <code>docs/02-design/.../high-speed-fifo.design.md</code> · 저장소 github.com/JamesjinKim/3dbw
+</footer>
+
+</div>
+</body>
+</html>
