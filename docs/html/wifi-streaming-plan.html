@@ -234,8 +234,8 @@ python3 udp_receiver.py --mg --fs 4      # mg 단위 (±4g)</code></pre>
   <h3>9.3 의사결정 옵션 (보류 중 — 미선택)</h3>
   <table>
     <tr><th>옵션</th><th>내용</th><th>장점</th><th>단점</th></tr>
-    <tr style="background:#e7f5ff">
-      <td><b>A. FIFO 구현</b><br>(하이브리드, <span style="color:#1971c2">권장</span>)</td>
+    <tr style="background:rgba(77,171,247,.16)">
+      <td><b>A. FIFO 구현</b><br>(하이브리드, <span style="color:#74c0fc;font-weight:700">권장</span>)</td>
       <td>저속=폴링(현재 유지) + 중·고속=FIFO 버스트, <code>rate_step</code>으로 자동 전환</td>
       <td>6.6k~26.6kHz 실제 달성, 메뉴가 진짜 동작, <b>검증된 1kHz 경로 보존</b></td>
       <td>FIFO 읽기 구현 필요 (단, 기반 함수 일부 존재)</td>
