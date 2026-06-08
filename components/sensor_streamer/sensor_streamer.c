@@ -76,9 +76,12 @@ static struct {
     uint32_t int_count;          /* INT 발생 횟수 (진단) */
 } s = {0};
 
-/* FIFO watermark ISR: 세마포어 give만 (SPI 호출 금지) */
+/* FIFO watermark ISR: 세마포어 give + 해당 핀 INT 일시 비활성화.
+ * (watermark INT는 레벨 신호 — 쌓인 동안 HIGH 유지라 재진입 폭주 방지.
+ *  태스크가 FIFO를 비운 뒤 다시 활성화한다.) */
 static void IRAM_ATTR fifo_isr(void *arg)
 {
+    gpio_intr_disable((gpio_num_t)(intptr_t)arg);
     s.int_count++;
     BaseType_t hpw = pdFALSE;
     xSemaphoreGiveFromISR(s.fifo_sem, &hpw);
@@ -172,6 +175,7 @@ static void sensor_task_fifo(void *arg)
         return;
     }
 
+
     /* === FIFO watermark 인터럽트 설정 ===
      * 조건: INT1 GPIO 유효 + 사용자가 read_mode=1(인터럽트) 선택.
      * read_mode=0(폴링/자동)이면 효율 폴링으로 동작. */
@@ -182,7 +186,9 @@ static void sensor_task_fifo(void *arg)
             gpio_config_t io = {
                 .pin_bit_mask = 1ULL << INT1_GPIO,
                 .mode = GPIO_MODE_INPUT,
-                .intr_type = GPIO_INTR_POSEDGE,
+                /* watermark INT는 레벨 신호(쌓인 동안 HIGH 유지).
+                 * HIGH_LEVEL 트리거 + ISR에서 INT 비활성화 → 태스크가 비운 뒤 재활성화. */
+                .intr_type = GPIO_INTR_HIGH_LEVEL,
                 .pull_down_en = GPIO_PULLDOWN_ENABLE,
                 .pull_up_en = GPIO_PULLUP_DISABLE,
             };
@@ -190,7 +196,7 @@ static void sensor_task_fifo(void *arg)
             /* ISR 서비스 (이미 설치돼 있으면 INVALID_STATE 무시) */
             esp_err_t isr_ret = gpio_install_isr_service(0);
             if (isr_ret == ESP_OK || isr_ret == ESP_ERR_INVALID_STATE) {
-                gpio_isr_handler_add(INT1_GPIO, fifo_isr, NULL);
+                gpio_isr_handler_add(INT1_GPIO, fifo_isr, (void *)(intptr_t)INT1_GPIO);
                 /* 센서 측: WTM 설정 + INT1 라우팅 */
                 iis3dwb_fifo_set_watermark(s.cfg.sensor, STREAM_INT_WTM);
                 iis3dwb_fifo_route_int1(s.cfg.sensor, true);
@@ -254,6 +260,12 @@ static void sensor_task_fifo(void *arg)
                 }
             }
             avail -= got;
+        }
+
+        /* INT 모드: FIFO를 비웠으니(레벨이 LOW로 내려감) INT 재활성화 →
+         * 다음 watermark 도달 시 다시 HIGH_LEVEL 트리거. */
+        if (s.int_enabled) {
+            gpio_intr_enable((gpio_num_t)INT1_GPIO);
         }
     }
 
@@ -415,5 +427,8 @@ void sensor_streamer_stop(void)
 
 void sensor_streamer_get_stats(sensor_streamer_stats_t *out)
 {
-    if (out) *out = s.stats;
+    if (out) {
+        *out = s.stats;
+        out->int_count = s.int_count;  /* ISR 카운터 (별도 보관) */
+    }
 }

@@ -52,6 +52,7 @@ typedef struct {
     uint32_t samples_sent;   /**< 전송한 샘플 수 */
     uint32_t dropped;        /**< 링버퍼 오버런으로 버린 샘플 수 */
     uint32_t send_errors;    /**< 전송 실패 횟수 */
+    uint32_t int_count;      /**< FIFO watermark INT 발생 횟수 (인터럽트 모드 진단) */
 } sensor_streamer_stats_t;
 
 /**

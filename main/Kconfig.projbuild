@@ -67,16 +67,16 @@ menu "IIS3DWB Vibration Sensor Configuration"
 
     config IIS3DWB_INT1_GPIO
         int "IIS3DWB INT1 GPIO (FIFO watermark interrupt)"
-        default 38
+        default 4
         range -1 48
         help
             ESP32-S3 GPIO connected to IIS3DWB INT1 pin.
-            HW pinmap (담당자 제공): INT1 -> IO38.
+            HW pinmap (담당자 확정): INT1 -> IO4. (실기기 검증 완료)
             실제 인터럽트 사용 여부는 사용자 설정(read_mode, NVS)이 결정:
-            read_mode=1(인터럽트) 선택 시 이 핀으로 watermark INT 수신,
+            read_mode=1(인터럽트) 선택 시 이 핀으로 watermark INT 수신 → 26.6kHz,
             read_mode=0(폴링/자동) 또는 INT 미수신 시 효율 폴링으로 자동 동작.
             -1 로 두면 핀 자체를 사용하지 않음 (항상 폴링).
-            (INT2 -> IO37 은 예비, 미사용)
+            (INT2 -> IO5 는 예비, 미사용)
 
     config IIS3DWB_SPI_FREQ_HZ
         int "SPI Clock Frequency (Hz)"

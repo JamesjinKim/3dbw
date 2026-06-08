@@ -709,8 +709,9 @@ void app_main(void)
         sensor_streamer_stats_t st;
         sensor_streamer_get_stats(&st);
         if (st.packets_sent > 0 || st.dropped > 0) {
-            ESP_LOGI(TAG, "[스트리밍] 패킷=%lu 샘플=%lu 드롭=%lu 에러=%lu",
-                     st.packets_sent, st.samples_sent, st.dropped, st.send_errors);
+            ESP_LOGI(TAG, "[스트리밍] 패킷=%lu 샘플=%lu 드롭=%lu 에러=%lu INT=%lu",
+                     st.packets_sent, st.samples_sent, st.dropped, st.send_errors,
+                     st.int_count);
         }
     }
 }
