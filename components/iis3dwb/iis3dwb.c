@@ -505,3 +505,36 @@ esp_err_t iis3dwb_read_fifo(iis3dwb_handle_t *handle, iis3dwb_raw_data_t *raw,
     *out_n = max_samples;
     return ESP_OK;
 }
+
+esp_err_t iis3dwb_fifo_set_watermark(iis3dwb_handle_t *handle, uint16_t wtm)
+{
+    if (!handle || !handle->initialized || wtm == 0 || wtm > 511) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* FIFO_CTRL1 = WTM[7:0] */
+    esp_err_t ret = iis3dwb_write_register(handle, IIS3DWB_REG_FIFO_CTRL1,
+                                           (uint8_t)(wtm & 0xFF));
+    if (ret != ESP_OK) return ret;
+    /* FIFO_CTRL2: bit0 = WTM8 (나머지 비트 보존) */
+    uint8_t c2 = 0;
+    ret = iis3dwb_read_register(handle, IIS3DWB_REG_FIFO_CTRL2, &c2);
+    if (ret != ESP_OK) return ret;
+    c2 = (uint8_t)((c2 & ~0x01) | ((wtm >> 8) & 0x01));
+    return iis3dwb_write_register(handle, IIS3DWB_REG_FIFO_CTRL2, c2);
+}
+
+esp_err_t iis3dwb_fifo_route_int1(iis3dwb_handle_t *handle, bool enable)
+{
+    if (!handle || !handle->initialized) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t v = 0;
+    esp_err_t ret = iis3dwb_read_register(handle, IIS3DWB_REG_INT1_CTRL, &v);
+    if (ret != ESP_OK) return ret;
+    if (enable) {
+        v |= IIS3DWB_INT1_FIFO_TH;
+    } else {
+        v &= ~IIS3DWB_INT1_FIFO_TH;
+    }
+    return iis3dwb_write_register(handle, IIS3DWB_REG_INT1_CTRL, v);
+}

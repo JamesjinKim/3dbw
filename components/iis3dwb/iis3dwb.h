@@ -151,6 +151,10 @@ typedef enum {
 /* 한 번의 버스트로 읽을 최대 샘플 수 (64×7=448B, SPI/DMA 안전) */
 #define IIS3DWB_FIFO_BURST_MAX 64
 
+/* INT1_CTRL(0x0D) 비트 (데이터시트 Table 23) */
+#define IIS3DWB_INT1_FIFO_TH   (1 << 3)  /**< FIFO watermark 도달 → INT1 */
+#define IIS3DWB_INT1_FIFO_OVR  (1 << 4)  /**< FIFO 오버런 → INT1 (진단용) */
+
 /* ============================================================================
  * Sensitivity Values (mg/LSB)
  * ============================================================================ */
@@ -375,6 +379,24 @@ esp_err_t iis3dwb_fifo_count(iis3dwb_handle_t *handle, uint16_t *count);
  */
 esp_err_t iis3dwb_read_fifo(iis3dwb_handle_t *handle, iis3dwb_raw_data_t *raw,
                             uint16_t max_samples, uint16_t *out_n);
+
+/**
+ * @brief FIFO watermark 임계값 설정 (샘플 수 단위)
+ *
+ * @param handle 디바이스 핸들
+ * @param wtm 임계 샘플 수 (1~511). 이만큼 쌓이면 INT1 발생
+ * @return ESP_OK / 통신 오류
+ */
+esp_err_t iis3dwb_fifo_set_watermark(iis3dwb_handle_t *handle, uint16_t wtm);
+
+/**
+ * @brief FIFO watermark 인터럽트를 INT1 핀으로 라우팅 (INT1_FIFO_TH)
+ *
+ * @param handle 디바이스 핸들
+ * @param enable true=INT1로 watermark INT 출력, false=해제
+ * @return ESP_OK / 통신 오류
+ */
+esp_err_t iis3dwb_fifo_route_int1(iis3dwb_handle_t *handle, bool enable);
 
 /**
  * @brief Read single register

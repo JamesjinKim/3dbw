@@ -11,6 +11,7 @@
 #include "sensor_streamer.h"
 
 #include <string.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -18,19 +19,35 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/ringbuf.h"
+#include "freertos/semphr.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "STREAMER";
+
+/* INT1 GPIO (Kconfig). -1 = 인터럽트 미사용(효율 폴링) */
+#ifdef CONFIG_IIS3DWB_INT1_GPIO
+#define INT1_GPIO  CONFIG_IIS3DWB_INT1_GPIO
+#else
+#define INT1_GPIO  (-1)
+#endif
+
+/* INT 대기 타임아웃(ms)과, 연속 미발생 시 폴링 fallback 임계 */
+#define FIFO_INT_TIMEOUT_MS  50
+#define FIFO_INT_MISS_MAX    20   /* ≈1초 미발생 → fallback */
 
 /* 링버퍼 크기: 샘플(6B) 다수 보관. WiFi가 잠깐 느려도 버틸 여유. */
 #define RINGBUF_SIZE   (16 * 1024)
 /* 샘플 1개 = int16 x,y,z = 6바이트 */
 #define SAMPLE_BYTES   6
-/* FIFO 효율 폴링: 한 묶음 목표 샘플 수 (이만큼 쌓일 시간을 자고 깨어남).
- * 26.6kHz에서 FIFO(512) 오버런 방지를 위해 충분히 자주 비워야 함.
- * 32샘플 ≈ 1.2ms 주기 → 깨어날 때마다 쌓인 것 전부 버스트로 비움. */
+/* FIFO 효율 폴링용 묶음 크기 (폴링 fallback 시): 32샘플 ≈ 1.2ms 주기 */
 #define STREAM_WTM_SAMPLES  32
+/* INT 모드 watermark: 한 INT에 한 버스트(BURST_MAX=64)로 깔끔히 비우도록 64로 맞춤.
+ * (128로 하면 한 INT에 64만 읽혀 FIFO가 차고 덮어써짐 → 실효레이트 저하)
+ * 64샘플 ≈ 2.4ms → 초당 ~416 INT, 무난한 부하. */
+#define STREAM_INT_WTM      IIS3DWB_FIFO_BURST_MAX  /* 64 */
 
 /* 패킷 헤더 (16바이트) — 수신 프로그램과 바이트 단위로 일치해야 함 */
 typedef struct __attribute__((packed)) {
@@ -53,7 +70,20 @@ static struct {
     TaskHandle_t tx_task_h;
     sensor_streamer_stats_t stats;
     uint32_t seq;
+    /* FIFO watermark 인터럽트 */
+    SemaphoreHandle_t fifo_sem;  /* ISR → 태스크 깨움 */
+    bool int_enabled;            /* INT 모드 사용 중인지 (fallback 시 false) */
+    uint32_t int_count;          /* INT 발생 횟수 (진단) */
 } s = {0};
+
+/* FIFO watermark ISR: 세마포어 give만 (SPI 호출 금지) */
+static void IRAM_ATTR fifo_isr(void *arg)
+{
+    s.int_count++;
+    BaseType_t hpw = pdFALSE;
+    xSemaphoreGiveFromISR(s.fifo_sem, &hpw);
+    if (hpw) portYIELD_FROM_ISR();
+}
 
 uint32_t sensor_streamer_rate_hz(uint8_t rate_step)
 {
@@ -142,16 +172,63 @@ static void sensor_task_fifo(void *arg)
         return;
     }
 
+    /* === FIFO watermark 인터럽트 설정 (INT1 GPIO 유효 시) === */
+    s.int_enabled = false;
+    if (INT1_GPIO >= 0) {
+        s.fifo_sem = xSemaphoreCreateBinary();
+        if (s.fifo_sem) {
+            gpio_config_t io = {
+                .pin_bit_mask = 1ULL << INT1_GPIO,
+                .mode = GPIO_MODE_INPUT,
+                .intr_type = GPIO_INTR_POSEDGE,
+                .pull_down_en = GPIO_PULLDOWN_ENABLE,
+                .pull_up_en = GPIO_PULLUP_DISABLE,
+            };
+            gpio_config(&io);
+            /* ISR 서비스 (이미 설치돼 있으면 INVALID_STATE 무시) */
+            esp_err_t isr_ret = gpio_install_isr_service(0);
+            if (isr_ret == ESP_OK || isr_ret == ESP_ERR_INVALID_STATE) {
+                gpio_isr_handler_add(INT1_GPIO, fifo_isr, NULL);
+                /* 센서 측: WTM 설정 + INT1 라우팅 */
+                iis3dwb_fifo_set_watermark(s.cfg.sensor, STREAM_INT_WTM);
+                iis3dwb_fifo_route_int1(s.cfg.sensor, true);
+                s.int_enabled = true;
+                ESP_LOGI(TAG, "FIFO 인터럽트 모드 (INT1=IO%d, WTM=%d)",
+                         INT1_GPIO, STREAM_INT_WTM);
+            }
+        }
+    }
+    if (!s.int_enabled) {
+        ESP_LOGI(TAG, "FIFO 효율 폴링 모드 (INT 미사용)");
+    }
+
     iis3dwb_raw_data_t burst[IIS3DWB_FIFO_BURST_MAX];
 
-    /* 효율 폴링: WTM(묶음 크기)만큼 쌓일 시간을 자고 깨어나 묶음 처리.
-     * INT 핀 미연결 환경에서 CPU 부하를 줄임 (빈 FIFO 헛폴링 방지). */
-    uint32_t batch_ms = (STREAM_WTM_SAMPLES * 1000u) / 26667u;  /* ≈2ms */
-    TickType_t wait = pdMS_TO_TICKS(batch_ms);
-    if (wait < 1) wait = 1;
+    /* 효율 폴링용 대기 시간 (INT 미사용 시) */
+    uint32_t batch_ms = (STREAM_WTM_SAMPLES * 1000u) / 26667u;
+    TickType_t poll_wait = pdMS_TO_TICKS(batch_ms);
+    if (poll_wait < 1) poll_wait = 1;
+    uint32_t int_miss = 0;
 
     while (s.running) {
-        vTaskDelay(wait);  /* WTM 쌓일 동안 CPU 양보 (부하 절감 핵심) */
+        if (s.int_enabled) {
+            /* INT 대기: watermark 도달 시 ISR이 깨움. timeout으로 미발생 감지 */
+            bool got = (xSemaphoreTake(s.fifo_sem,
+                        pdMS_TO_TICKS(FIFO_INT_TIMEOUT_MS)) == pdTRUE);
+            if (!got) {
+                /* INT 안 옴 → fallback 카운트 (오배선/오설정 대비) */
+                uint16_t a = 0;
+                iis3dwb_fifo_count(s.cfg.sensor, &a);
+                if (a == 0 && ++int_miss > FIFO_INT_MISS_MAX) {
+                    s.int_enabled = false;
+                    ESP_LOGW(TAG, "INT 미발생 → 효율 폴링 fallback");
+                }
+            } else {
+                int_miss = 0;
+            }
+        } else {
+            vTaskDelay(poll_wait);  /* 효율 폴링 (fallback 또는 INT 미사용) */
+        }
 
         uint16_t avail = 0;
         if (iis3dwb_fifo_count(s.cfg.sensor, &avail) != ESP_OK) {
@@ -178,6 +255,15 @@ static void sensor_task_fifo(void *arg)
         }
     }
 
+    /* INT 정리 */
+    if (INT1_GPIO >= 0) {
+        iis3dwb_fifo_route_int1(s.cfg.sensor, false);
+        gpio_isr_handler_remove(INT1_GPIO);
+    }
+    if (s.fifo_sem) {
+        vSemaphoreDelete(s.fifo_sem);
+        s.fifo_sem = NULL;
+    }
     iis3dwb_fifo_disable(s.cfg.sensor);
     ESP_LOGI(TAG, "센서 태스크(FIFO) 종료");
     vTaskDelete(NULL);
@@ -220,13 +306,21 @@ static void tx_task(void *arg)
             h->timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000);
 
             size_t len = sizeof(stream_header_t) + collected * SAMPLE_BYTES;
-            int sent = sendto(s.sock, packet, len, 0,
+            int sent = -1;
+            /* ENOMEM(lwip TX 버퍼 일시 부족) 시 양보하며 재시도.
+             * INT 모드는 버스트로 몰려 순간 버퍼 고갈이 잦음 → 최대 8회 재시도. */
+            for (int attempt = 0; attempt < 8; attempt++) {
+                sent = sendto(s.sock, packet, len, 0,
                               (struct sockaddr *)&s.dest, sizeof(s.dest));
-            if (sent < 0) {
-                s.stats.send_errors++;
-            } else {
+                if (sent >= 0) break;
+                if (errno != ENOMEM) break;   /* 다른 오류는 재시도 무의미 */
+                vTaskDelay(1);                 /* 버퍼 회복 대기 */
+            }
+            if (sent >= 0) {
                 s.stats.packets_sent++;
                 s.stats.samples_sent += collected;
+            } else {
+                s.stats.send_errors++;
             }
             collected = 0;
         }

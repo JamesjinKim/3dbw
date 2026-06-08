@@ -65,6 +65,18 @@ menu "IIS3DWB Vibration Sensor Configuration"
             GPIO number for SPI CS (Chip Select).
             This connects to CS on IIS3DWB.
 
+    config IIS3DWB_INT1_GPIO
+        int "IIS3DWB INT1 GPIO (FIFO watermark interrupt)"
+        default -1
+        range -1 48
+        help
+            ESP32-S3 GPIO connected to IIS3DWB INT1 pin.
+            HW pinmap (담당자 제공): INT1 -> IO38. 단, 실기기에서 IO38/IO37 둘 다
+            INT 신호 미수신(LOW 고정) 확인됨 → 배선 검증 전까지 -1(효율폴링) 사용.
+            배선이 확인되면 38 로 설정하면 인터럽트 모드로 동작 (코드는 준비됨).
+            -1 = 인터럽트 미사용 (Watermark 효율 폴링, 26.6kHz 검증 완료).
+            (INT2 -> IO37 은 예비, 미사용)
+
     config IIS3DWB_SPI_FREQ_HZ
         int "SPI Clock Frequency (Hz)"
         default 1000000
