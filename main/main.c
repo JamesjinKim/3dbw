@@ -685,6 +685,7 @@ void app_main(void)
                 .server_port = scfg.server_port,
                 .rate_step = scfg.rate_step,
                 .transport = (stream_transport_type_t)scfg.transport,
+                .read_mode = scfg.read_mode,
             };
             esp_err_t sret = sensor_streamer_start(&st);
             if (sret == ESP_OK) {

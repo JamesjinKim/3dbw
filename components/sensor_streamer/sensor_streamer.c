@@ -172,9 +172,11 @@ static void sensor_task_fifo(void *arg)
         return;
     }
 
-    /* === FIFO watermark 인터럽트 설정 (INT1 GPIO 유효 시) === */
+    /* === FIFO watermark 인터럽트 설정 ===
+     * 조건: INT1 GPIO 유효 + 사용자가 read_mode=1(인터럽트) 선택.
+     * read_mode=0(폴링/자동)이면 효율 폴링으로 동작. */
     s.int_enabled = false;
-    if (INT1_GPIO >= 0) {
+    if (INT1_GPIO >= 0 && s.cfg.read_mode == 1) {
         s.fifo_sem = xSemaphoreCreateBinary();
         if (s.fifo_sem) {
             gpio_config_t io = {

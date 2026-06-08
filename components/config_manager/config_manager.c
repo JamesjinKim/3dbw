@@ -20,6 +20,7 @@ static const char *TAG = "CONFIG_MGR";
 #define NVS_KEY_SRV_PORT "srv_port"
 #define NVS_KEY_RATE     "stream_rate"
 #define NVS_KEY_TRANSP   "transport"
+#define NVS_KEY_READMODE "read_mode"
 
 esp_err_t config_manager_init(void)
 {
@@ -161,6 +162,7 @@ esp_err_t config_manager_save_stream(const config_stream_t *cfg)
     if (ret == ESP_OK) ret = nvs_set_u16(h, NVS_KEY_SRV_PORT, cfg->server_port);
     if (ret == ESP_OK) ret = nvs_set_u8(h, NVS_KEY_RATE, cfg->rate_step);
     if (ret == ESP_OK) ret = nvs_set_u8(h, NVS_KEY_TRANSP, cfg->transport);
+    if (ret == ESP_OK) ret = nvs_set_u8(h, NVS_KEY_READMODE, cfg->read_mode);
     if (ret == ESP_OK) ret = nvs_commit(h);
     nvs_close(h);
 
@@ -201,6 +203,9 @@ esp_err_t config_manager_load_stream(config_stream_t *cfg)
     }
     if (nvs_get_u8(h, NVS_KEY_TRANSP, &cfg->transport) != ESP_OK) {
         cfg->transport = 0;  // 기본 UDP
+    }
+    if (nvs_get_u8(h, NVS_KEY_READMODE, &cfg->read_mode) != ESP_OK) {
+        cfg->read_mode = 0;  // 기본 폴링(자동)
     }
     nvs_close(h);
 

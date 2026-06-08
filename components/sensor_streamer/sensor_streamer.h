@@ -41,6 +41,7 @@ typedef struct {
     uint16_t server_port;       /**< 수신 서버 포트 */
     uint8_t rate_step;          /**< 샘플레이트 단계 0~4 */
     stream_transport_type_t transport; /**< 전송 프로토콜 */
+    uint8_t read_mode;          /**< 0=폴링(자동), 1=인터럽트 (FIFO 모드에서만 적용) */
 } sensor_streamer_config_t;
 
 /**
