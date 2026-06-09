@@ -1,0 +1,10 @@
+# 파이썬 캐시
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# 입력값 기억 파일은 사용자 홈(~/.iis3dwb_sensor_setup.json)에 저장되므로
+# 이 폴더엔 안 생기지만, 혹시 생성될 NVS 임시 bin 제외
+*.bin

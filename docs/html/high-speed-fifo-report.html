@@ -140,22 +140,29 @@ FIFO 배치는 정확한 101b에서만 트리거되어, 고속 구현 중에야 
 
 <!-- 5 -->
 <h2 id="load">5. CPU 부하 — 현장 요구 반영</h2>
-<p>현장에서 <b>"폴링보다 부하가 덜한 방식"</b>을 요구했습니다. 다만 현재 보드는 <b>SPI + UART만 사용</b>하고
-IIS3DWB의 INT 핀이 ESP32 GPIO에 연결돼 있지 않아 <b>하드웨어 인터럽트는 불가</b>합니다.</p>
+<p>현장에서 <b>"폴링보다 부하가 덜한 방식"</b>을 요구했습니다. 두 가지 해법을 모두 구현·검증했고,
+사용자가 GUI에서 선택합니다.</p>
 
 <div class="note green">
-<b>해결: Watermark 기반 효율 폴링</b><br>
+<b>① Watermark 기반 효율 폴링 (기본값)</b><br>
 FIFO에 일정량 쌓일 시간만큼 <code>vTaskDelay</code>로 <b>CPU를 양보(잠듦)</b>하고, 깨어나 한 번에 묶음 읽기.
-→ 빈 FIFO를 헛되이 확인하지 않아 부하가 크게 줄어듭니다. INT 핀 없이 부하 절감 달성.
+→ 빈 FIFO를 헛되이 확인하지 않아 부하가 크게 줄어듭니다. INT 배선과 무관하게 안전 동작.
+</div>
+<div class="note green">
+<b>② 하드웨어 인터럽트 (INT1 → IO4, 검증 완료)</b><br>
+HW 담당자 확정 핀맵 <b>INT1 → ESP32 IO4</b>에 watermark 인터럽트를 연결.
+FIFO가 임계치까지 차면 핀이 ISR을 깨워 그때만 묶음 읽기 → <b>가장 낮은 부하</b>.
+실기기 <b>26.6kHz 무손실</b>(<code>샘플 267800/10s, 드롭0/에러0, INT 초당 ~409회</code>) 달성.
 </div>
 <table>
   <tr><th>방식</th><th>INT 핀</th><th>26.6kHz</th><th>CPU 부하</th></tr>
   <tr><td>1샘플 폴링 (이전)</td><td>불필요</td><td>❌</td><td>나쁨</td></tr>
-  <tr><td><b>FIFO 효율 폴링 (현재)</b></td><td>불필요</td><td>✅ 달성</td><td>낮음</td></tr>
-  <tr><td>FIFO + 하드웨어 INT</td><td><b>배선 필요</b></td><td>◎</td><td>가장 낮음</td></tr>
+  <tr><td><b>FIFO 효율 폴링 (기본값)</b></td><td>불필요</td><td>✅ 달성</td><td>낮음</td></tr>
+  <tr><td><b>FIFO + 하드웨어 INT (IO4)</b></td><td>IO4 (검증됨)</td><td>✅ 달성</td><td>가장 낮음</td></tr>
 </table>
-<p class="muted">※ 향후 INT 핀이 배선되면 <code>vTaskDelay</code>를 세마포어(ISR이 신호)로 교체해
-구조 변경 없이 진짜 인터럽트 방식으로 전환 가능하도록 설계해 두었습니다.</p>
+<p class="muted">※ 핵심 구현 포인트: watermark INT는 <b>레벨 신호</b>라 <code>GPIO_INTR_HIGH_LEVEL</code>로 받고,
+ISR에서 INT를 끈 뒤 태스크가 FIFO를 비우고 다시 켜는 패턴을 사용합니다(엣지 트리거는 1회만 발동).
+INT 신호 미수신 시 자동으로 효율 폴링으로 fallback합니다. 상세: <code>fifo-interrupt.design.md</code>.</p>
 
 <!-- 6 -->
 <h2 id="hybrid">6. 하이브리드 동작 — 검증된 저속 보존</h2>
