@@ -67,10 +67,24 @@ READMODE_OPTIONS = [
 
 # ===================== esptool 탐색 =====================
 def esptool_cmd():
-    """esptool 실행 커맨드(리스트) 반환. esptool.py 또는 'python -m esptool'."""
-    p = shutil.which("esptool.py")
-    if p:
-        return [p]
+    """esptool 실행 커맨드(리스트) 반환.
+
+    탐색 우선순위:
+      1) PATH 의 `esptool.py` / `esptool` (ESP-IDF export.sh 활성화 시)
+      2) ESP-IDF venv 자동 스캔 — `~/.espressif/python_env/*/bin/esptool.py`
+         (export.sh 를 안 깔아도 같은 PC 에서 한 번이라도 ESP-IDF 를 설치했다면 잡힘)
+      3) 현재 파이썬에서 `-m esptool` (시스템에 pip install esptool 한 경우)
+    """
+    for name in ("esptool.py", "esptool"):
+        p = shutil.which(name)
+        if p:
+            return [p]
+    # venv 의 esptool.py 는 같은 venv 의 python 으로 돌려야 site-packages 가 잡힘.
+    # 시스템 파이썬으로 venv 스크립트를 실행하면 `import esptool` 에서 실패한다.
+    for cand in sorted(Path.home().glob(".espressif/python_env/*/bin/esptool.py")):
+        venv_py = cand.parent / "python"
+        if cand.is_file() and venv_py.exists():
+            return [str(venv_py), "-m", "esptool"]
     return [sys.executable, "-m", "esptool"]
 
 
