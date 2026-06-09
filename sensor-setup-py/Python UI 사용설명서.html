@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IIS3DWB 센서 설정 툴 (Python) — 사용 설명서</title>
+<style>
+  :root{
+    --bg:#0f1419; --card:#1a212b; --card2:#212a36;
+    --line:#2d3a48; --txt:#e6edf3; --muted:#9bb0c4; --accent:#4ea1ff;
+    --green:#3fb950; --amber:#d29922; --red:#f85149; --purple:#bc8cff;
+    --code:#0d1117;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;
+    background:var(--bg);color:var(--txt);line-height:1.7;font-size:15px}
+  .wrap{max-width:980px;margin:0 auto;padding:0 20px 80px}
+  header{background:linear-gradient(135deg,#16314f 0%,#0f1419 100%);
+    padding:48px 20px 40px;border-bottom:1px solid var(--line)}
+  header .wrap{padding-bottom:0}
+  h1{font-size:28px;margin:0 0 8px}
+  .sub{color:var(--muted);font-size:16px}
+  .badge{display:inline-block;background:var(--card2);border:1px solid var(--line);
+    color:var(--muted);font-size:12px;padding:3px 10px;border-radius:20px;margin:4px 6px 0 0}
+  .badge.ok{border-color:var(--green);color:var(--green)}
+  h2{font-size:22px;margin:48px 0 16px;padding-bottom:10px;border-bottom:2px solid var(--accent)}
+  h3{font-size:18px;margin:28px 0 12px;color:var(--accent)}
+  h4{font-size:15px;margin:20px 0 8px;color:var(--purple)}
+  p{margin:10px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:20px 24px;margin:16px 0}
+  code{background:var(--code);padding:2px 6px;border-radius:5px;font-size:13px;
+    font-family:"SF Mono",Menlo,Consolas,monospace;color:#79c0ff}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;
+    padding:16px;overflow-x:auto;font-size:13px;line-height:1.6}
+  pre code{background:none;padding:0;color:#c9d1d9}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left}
+  th{background:var(--card2);color:var(--muted);font-weight:600}
+  td code{font-size:12px}
+  .step{position:relative;padding-left:52px;margin:24px 0}
+  .step .n{position:absolute;left:0;top:0;width:36px;height:36px;border-radius:50%;
+    background:var(--accent);color:#001;display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:16px}
+  .note{border-left:4px solid var(--accent);background:#16314f33;padding:12px 16px;
+    border-radius:0 8px 8px 0;margin:14px 0}
+  .warn{border-left:4px solid var(--amber);background:#d2992222;padding:12px 16px;
+    border-radius:0 8px 8px 0;margin:14px 0}
+  .ok{border-left:4px solid var(--green);background:#3fb95022;padding:12px 16px;
+    border-radius:0 8px 8px 0;margin:14px 0}
+  .flow{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;
+    margin:20px 0;font-size:14px}
+  .flow .box{background:var(--card2);border:1px solid var(--line);border-radius:10px;
+    padding:14px 18px;text-align:center;min-width:130px}
+  .flow .box b{display:block;color:var(--accent);font-size:15px;margin-bottom:4px}
+  .flow .arr{color:var(--green);font-size:22px;font-weight:700}
+  .toc{columns:2;font-size:14px}
+  @media(max-width:720px){.toc{columns:1}}
+  .toc a{color:var(--muted);text-decoration:none;display:block;padding:3px 0}
+  .toc a:hover{color:var(--accent)}
+  .pill{font-size:12px;padding:2px 8px;border-radius:6px;font-weight:600}
+  .pill.fw{background:#1f6feb33;color:#79c0ff}
+  .pill.rpi{background:#bc8cff33;color:#bc8cff}
+  footer{color:var(--muted);font-size:13px;text-align:center;margin-top:60px;
+    padding-top:20px;border-top:1px solid var(--line)}
+  .kvs{font-size:13px;color:var(--muted)}
+  hr{border:none;border-top:1px solid var(--line);margin:36px 0}
+
+  /* 간단 GUI 미리보기 — 실제 Tkinter 창(약 460px)에 가깝게 */
+  .gui{width:100%;max-width:440px;margin:16px auto;background:#eef2f6;border:1px solid #c7d0da;
+    border-radius:10px;overflow:hidden;color:#1a212b;box-shadow:0 6px 20px #0006}
+  .gui .bar{background:#dde4ec;padding:10px 16px;font-size:14px;font-weight:600;
+    border-bottom:1px solid #c7d0da;text-align:center}
+  .gui .body{padding:18px 22px}
+  .gui .lbl{font-size:12.5px;color:#445;margin:13px 0 4px}
+  .gui .inp{display:block;width:100%;background:#fff;border:1px solid #b9c3cf;border-radius:6px;
+    padding:9px 12px;font-size:13.5px;color:#1a212b}
+  .gui .map{color:#4ea1ff;font-size:11px;margin-left:4px}
+  .gui .btn{display:block;width:100%;background:#2f6feb;color:#fff;text-align:center;border-radius:6px;
+    padding:11px;font-size:14px;font-weight:600;margin-top:20px}
+  .gui .btn.ghost{background:#e3e9f0;color:#2f6feb;border:1px solid #b9c3cf;
+    width:auto;display:inline-block;padding:6px 14px;font-size:12.5px;margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>🛠️ IIS3DWB 센서 설정 툴 (Python)</h1>
+    <div class="sub">PC에서 센서의 WiFi·수신서버·측정속도·읽기방식을 입력해 디바이스에 저장하는 설정 도구</div>
+    <div>
+      <span class="badge ok">무설치 (tkinter 표준)</span>
+      <span class="badge ok">ESP-IDF 전체 설치 불필요</span>
+      <span class="badge">esptool 만 필요</span>
+      <span class="badge">Mac · Linux(RPi) · Windows</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- 목차 -->
+<div class="card">
+  <h4 style="margin-top:0">목차</h4>
+  <div class="toc">
+    <a href="#what">1. 이 툴은 무엇인가</a>
+    <a href="#how">2. 동작 원리 (한눈에)</a>
+    <a href="#prep">3. 준비물</a>
+    <a href="#run">4. 실행 방법</a>
+    <a href="#use">5. 화면 사용법 (단계별)</a>
+    <a href="#fields">6. 입력 항목 설명</a>
+    <a href="#multi">7. 여러 센서 연속 설정</a>
+    <a href="#verify">8. 동작 확인</a>
+    <a href="#trouble">9. 문제 해결</a>
+    <a href="#spec">10. NVS 규격 (참고)</a>
+  </div>
+</div>
+
+<!-- 1 -->
+<h2 id="what">1. 이 툴은 무엇인가</h2>
+<p>IIS3DWB 진동 센서 디바이스(ESP32-S3)는 <b>센서 펌웨어가 이미 플래시</b>되어 있습니다.
+이 툴은 그 펌웨어가 부팅 시 읽는 <b>설정값</b>(WiFi, 수신 서버 IP, 측정 속도 등)을
+디바이스의 <b>Flash 메모리(NVS = EEPROM 역할)</b>에 써넣는 역할만 합니다.</p>
+<div class="ok">
+  <b>핵심:</b> 설정값을 한 번 써두면 디바이스는 전원을 넣을 때마다 그 값을 읽어
+  <b>자동으로 WiFi에 연결하고 데이터를 전송</b>합니다. 값이 바뀔 때(WiFi 변경, 수신 서버 IP 변경 등)
+  이 툴로 다시 써넣기만 하면 됩니다.
+</div>
+<div class="note">
+  <b>이 툴이 하지 않는 것:</b> 센서 펌웨어 자체를 빌드하거나 플래시하지 않습니다.
+  펌웨어는 별도로 플래시되어 있어야 합니다
+  (펌웨어 저장소: <code>github.com/JamesjinKim/3dbw</code> → <code>idf.py flash</code>).
+</div>
+
+<!-- 2 -->
+<h2 id="how">2. 동작 원리 (한눈에)</h2>
+<div class="flow">
+  <div class="box"><b>① 입력</b>WiFi·서버IP<br>속도·읽기방식</div>
+  <div class="arr">→</div>
+  <div class="box"><b>② NVS 생성</b>파이썬에서<br>직접 (무설치)</div>
+  <div class="arr">→</div>
+  <div class="box"><b>③ 주입</b>esptool 로<br>Flash 0x9000</div>
+  <div class="arr">→</div>
+  <div class="box"><b>④ 재부팅</b>디바이스가<br>자동 연결·전송</div>
+</div>
+<div class="note">
+  ② NVS 생성은 <code>nvs_gen.py</code>(순수 파이썬)가 담당합니다. ESP-IDF 의
+  <code>nvs_partition_gen.py</code> 같은 외부 도구가 <b>필요 없습니다</b> —
+  검증된 기준 바이너리와 <b>바이트 단위로 동일</b>함이 확인되어 있습니다.
+  따라서 굽는 단계(<code>esptool</code>)만 있으면 어느 PC에서나 동작합니다.
+</div>
+
+<!-- 3 -->
+<h2 id="prep">3. 준비물</h2>
+<table>
+  <tr><th>항목</th><th>설명</th></tr>
+  <tr><td><b>Python 3.7+</b></td><td>표준 라이브러리 <code>tkinter</code> 사용 (대부분 기본 포함)</td></tr>
+  <tr><td><b>esptool</b></td><td>둘 중 하나면 됨: ① ESP-IDF 활성화(<code>source .../export.sh</code>) <b>또는</b> ② <code>pip install esptool</code></td></tr>
+  <tr><td>(선택) pyserial</td><td>USB 포트 자동 인식에 사용. 없으면 <code>/dev</code> 스캔으로 폴백. <code>pip install pyserial</code></td></tr>
+  <tr><td>디바이스</td><td>펌웨어가 플래시된 IIS3DWB 디바이스를 <b>데이터용 USB 케이블</b>로 연결</td></tr>
+</table>
+<div class="warn">
+  <b>USB 케이블 주의:</b> 충전 전용 케이블은 데이터 통신이 안 됩니다.
+  주입 시 <code>No serial data received</code> 오류가 나면 케이블부터 의심하세요.
+</div>
+
+<!-- 4 -->
+<h2 id="run">4. 실행 방법</h2>
+<p>이 폴더(<code>set_sensor_gui.py</code> + <code>nvs_gen.py</code>)만 PC로 복사하면 됩니다.</p>
+<pre><code># esptool 이 없으면 둘 중 하나
+source ~/esp/v5.4.3/esp-idf/export.sh      # ESP-IDF 활성화 (경로는 환경에 맞게)
+#   또는:  pip install esptool
+
+# 설정 툴 실행
+cd sensor-setup-py
+python3 set_sensor_gui.py</code></pre>
+<div class="note">
+  <b>라즈베리파이(헤드리스/SSH)에서:</b> GUI 창이 떠야 하므로 모니터가 연결돼 있거나,
+  SSH 접속 시 <code>ssh -X</code> (X11 포워딩) 로 접속해야 화면이 보입니다.
+</div>
+
+<!-- 5 -->
+<h2 id="use">5. 화면 사용법 (단계별)</h2>
+
+<div>
+  <div>
+    <div class="step"><span class="n">1</span>
+      <b>USB 포트 선택</b><br>
+      <span class="kvs">콤보박스에서 디바이스 포트를 고릅니다. 안 보이면 <b>"포트 새로고침"</b>.</span></div>
+    <div class="step"><span class="n">2</span>
+      <b>WiFi 이름/비밀번호</b><br>
+      <span class="kvs">2.4GHz WiFi 전용. (ESP32-S3는 5GHz 미지원)</span></div>
+    <div class="step"><span class="n">3</span>
+      <b>라즈베리파이 IP / 포트</b><br>
+      <span class="kvs">수신기 화면에 표시된 IP. 포트 기본 9000.</span></div>
+    <div class="step"><span class="n">4</span>
+      <b>측정 속도 / 읽기 방식</b><br>
+      <span class="kvs">기본값(3.3kHz · 인터럽트) 권장. 아래 6장 참고.</span></div>
+    <div class="step"><span class="n">5</span>
+      <b>"설정 저장 &amp; 디바이스에 주입" 클릭</b><br>
+      <span class="kvs">로그창에 진행 상황이 표시되고, 완료되면 안내창이 뜹니다.</span></div>
+  </div>
+
+  <h4 style="text-align:center;margin-top:28px">화면 미리보기</h4>
+  <!-- GUI 미리보기 -->
+  <div class="gui">
+    <div class="bar">IIS3DWB 센서 설정 툴</div>
+    <div class="body">
+      <div class="lbl">USB 포트</div>
+      <div class="inp">/dev/cu.usbmodem1433201 ▾</div>
+      <div class="btn ghost">⟳ 포트 새로고침</div>
+      <div class="lbl">WiFi 이름 (SSID)</div>
+      <div class="inp">MyWiFi-2.4G</div>
+      <div class="lbl">WiFi 비밀번호</div>
+      <div class="inp">••••••••</div>
+      <div class="lbl">라즈베리파이 IP <span class="map">→ srv_ip</span></div>
+      <div class="inp">192.168.0.37</div>
+      <div class="lbl">포트 <span class="map">→ srv_port</span></div>
+      <div class="inp">9000</div>
+      <div class="lbl">측정 속도 (용도) <span class="map">→ stream_rate</span></div>
+      <div class="inp">3.3 kHz · 일반 모니터링 (기본) ▾</div>
+      <div class="lbl">데이터 읽기 방식 <span class="map">→ read_mode</span></div>
+      <div class="inp">인터럽트 · 저부하 ▾</div>
+      <div class="btn">설정 저장 &amp; 디바이스에 주입</div>
+    </div>
+  </div>
+</div>
+
+<div class="ok">주입이 끝나면 디바이스를 <b>재부팅(전원 재인가)</b> 하면 WiFi에 자동 연결되고 라즈베리파이로 데이터를 전송합니다.</div>
+
+<!-- 6 -->
+<h2 id="fields">6. 입력 항목 설명</h2>
+<table>
+  <tr><th>항목</th><th>NVS 키</th><th>설명</th></tr>
+  <tr><td>WiFi 이름 (SSID)</td><td><code>wifi_ssid</code></td><td>접속할 2.4GHz WiFi 이름</td></tr>
+  <tr><td>WiFi 비밀번호</td><td><code>wifi_pass</code></td><td>WiFi 비밀번호</td></tr>
+  <tr><td>라즈베리파이 IP</td><td><code>srv_ip</code></td><td>데이터를 받을 수신 서버 IP (수신기 화면에 표시됨)</td></tr>
+  <tr><td>포트</td><td><code>srv_port</code></td><td>수신 포트 (기본 9000)</td></tr>
+  <tr><td>측정 속도</td><td><code>stream_rate</code></td><td>전송 샘플레이트 단계 (아래 표)</td></tr>
+  <tr><td>데이터 읽기 방식</td><td><code>read_mode</code></td><td>인터럽트(기본) / 폴링</td></tr>
+</table>
+
+<h4>측정 속도 (stream_rate)</h4>
+<table>
+  <tr><th>선택</th><th>값</th><th>용도</th></tr>
+  <tr><td>3.3 kHz · 일반 모니터링</td><td>1</td><td><span style="color:var(--green)">기본·권장</span> — FIFO 방식, 데이터 풍부</td></tr>
+  <tr><td>6.6 kHz · 중속 분석</td><td>2</td><td>중속 진동 분석</td></tr>
+  <tr><td>13.3 kHz · 고속 분석</td><td>3</td><td>고속 분석</td></tr>
+  <tr><td>26.6 kHz · 정밀 진동분석</td><td>4</td><td>최대 — 센서 원본 전체 (WiFi 부담 큼)</td></tr>
+  <tr><td>1 kHz · 안정 수신</td><td>0</td><td>폴링 방식, WiFi 불안정 시 저부담</td></tr>
+</table>
+
+<h4>데이터 읽기 방식 (read_mode)</h4>
+<table>
+  <tr><th>선택</th><th>값</th><th>설명</th></tr>
+  <tr><td>인터럽트 · 저부하</td><td>1</td><td><span style="color:var(--green)">기본</span> — INT 신호로 필요할 때만 깨어나 CPU 부하 최소. 신호 미수신 시 자동 폴링 fallback (실기기 26.6kHz 검증).</td></tr>
+  <tr><td>자동 (폴링) · 안정</td><td>0</td><td>FIFO 효율 폴링. INT 배선과 무관하게 안정 동작.</td></tr>
+</table>
+<div class="note">두 방식 모두 26.6kHz 무손실로 실기기 검증됨. 잘 모르겠으면 기본값 그대로 두면 됩니다.</div>
+
+<!-- 7 -->
+<h2 id="multi">7. 여러 센서 연속 설정</h2>
+<p>입력값은 자동으로 기억됩니다 (이 PC의 <code>~/.iis3dwb_sensor_setup.json</code>).
+같은 WiFi·같은 라즈베리파이로 여러 대를 빠르게 등록할 수 있습니다.</p>
+<div class="ok">
+  <b>흐름:</b> 1번 센서 입력·주입 → 입력값 기억됨 → 2번 센서는 <b>USB 케이블만 바꿔 꽂고</b>
+  "포트 새로고침" 후 바로 "주입" → 3번 센서도 동일… (앱을 껐다 켜도 입력값 유지)
+</div>
+
+<!-- 8 -->
+<h2 id="verify">8. 동작 확인</h2>
+<p>주입 후 디바이스 시리얼 로그로 연결·전송을 확인할 수 있습니다.</p>
+<pre><code>idf.py -p /dev/ttyACM0 monitor      # 포트는 환경에 맞게 (종료: Ctrl+])</code></pre>
+<p>로그에서 다음을 확인:</p>
+<ul>
+  <li><code>WiFi Connected</code> + <code>IP : 192.168.0.xxx</code></li>
+  <li><code>📡 센서 데이터 스트리밍 중! → (라즈베리파이IP):9000</code></li>
+  <li><code>[스트리밍] 패킷=... 드롭=0 에러=0</code></li>
+</ul>
+<p>라즈베리파이 수신기 화면에 실시간 가속도값(X/Y/Z mg)과 실효 레이트가 표시되면 성공입니다.</p>
+
+<!-- 9 -->
+<h2 id="trouble">9. 문제 해결</h2>
+
+<div class="warn">
+  <b>가장 흔한 원인 = 수신 서버 IP 불일치.</b> "주입은 됐는데 라즈베리파이에 아무것도 안 온다"면
+  대개 디바이스에 넣은 IP ≠ 라즈베리파이 현재 IP 입니다.
+  라즈베리파이에서 <code>hostname -I</code> 로 현재 IP를 확인하고 그 IP로 다시 주입하세요.
+  (라즈베리파이 IP를 <b>고정</b>하면 근본 해결됩니다.)
+</div>
+
+<table>
+  <tr><th>증상</th><th>해결</th></tr>
+  <tr><td><code>esptool</code> 못 찾음 / 관련 오류</td><td><code>pip install esptool</code> 또는 ESP-IDF 활성화. (NVS 생성은 ESP-IDF 불필요, 굽기만 필요)</td></tr>
+  <tr><td><code>No serial data received</code></td><td>① <b>데이터용 USB 케이블</b>인지 확인(충전 전용 ✗) ② 다른 프로그램(<code>idf.py monitor</code> 등)이 포트 점유 중인지 확인 후 닫기 ③ 케이블 다시 꽂고 "포트 새로고침"</td></tr>
+  <tr><td>포트 목록이 비어 있음</td><td>USB 연결 확인 후 "포트 새로고침". Linux 는 <code>dialout</code> 그룹 권한 필요 (<code>sudo usermod -a -G dialout $USER</code> 후 재로그인). 인식이 약하면 <code>pip install pyserial</code>.</td></tr>
+  <tr><td>GUI 창이 안 뜸 (라즈베리파이)</td><td>모니터 연결 또는 <code>ssh -X</code> 로 접속. 헤드리스 SSH 는 화면 출력이 없음.</td></tr>
+  <tr><td>주입 후 수신 안 됨</td><td>위 경고 박스 참고 — RPi IP 불일치 확인 후 재주입. 디바이스·RPi 가 같은 2.4GHz 네트워크인지도 확인.</td></tr>
+</table>
+
+<!-- 10 -->
+<h2 id="spec">10. NVS 규격 (참고 · 수정 금지)</h2>
+<table>
+  <tr><th>항목</th><th>값</th></tr>
+  <tr><td>NVS namespace</td><td><code>devcfg</code></td></tr>
+  <tr><td>NVS 파티션 offset / size</td><td><code>0x9000</code> / <code>0x6000</code> (24576 B)</td></tr>
+  <tr><td>키 순서</td><td><code>wifi_ssid</code>, <code>wifi_pass</code>, <code>srv_ip</code>, <code>srv_port</code>(u16), <code>stream_rate</code>(u8), <code>transport</code>(u8), <code>read_mode</code>(u8)</td></tr>
+</table>
+<div class="note">
+  이 규격은 펌웨어 및 Tauri 설정툴(<code>config-tool</code>)과 동일합니다.
+  <code>nvs_gen.py</code> 는 그 Rust 구현을 파이썬으로 1:1 포팅한 것으로,
+  검증된 기준 바이너리와 <b>byte-exact 일치</b>가 확인되어 있습니다.
+</div>
+
+<div class="warn">
+  <b>보안 주의:</b> 입력값 기억 파일(<code>~/.iis3dwb_sensor_setup.json</code>)에 WiFi 비밀번호가
+  평문으로 저장됩니다(이 PC 안에만). 공용 PC 라면 작업 후
+  <code>rm ~/.iis3dwb_sensor_setup.json</code> 으로 삭제하세요.
+</div>
+
+<footer>
+  IIS3DWB 센서 설정 툴 (Python) — 사용 설명서<br>
+  펌웨어/소스: <a href="https://github.com/JamesjinKim/3dbw" style="color:var(--accent)">github.com/JamesjinKim/3dbw</a> ·
+  ESP32-S3 · IIS3DWB (STMicroelectronics)
+</footer>
+</div>
+</body>
+</html>

@@ -50,13 +50,6 @@ DEFAULT_PORT_HINTS = ("/dev/ttyACM", "/dev/ttyUSB", "/dev/cu.usb", "COM")
 # 입력값 기억 파일 (이 PC 사용자 홈) — 여러 센서 연속 세팅 편의
 PREFS_PATH = Path.home() / ".iis3dwb_sensor_setup.json"
 
-# IIS3DWB 센서 보드가 사용하는 USB VID:PID 목록.
-# 이 목록에 매칭되면 콤보박스에 "IIS3DWB 센서" 로 직관적으로 표시한다.
-# (새 하드웨어 리비전이 추가되면 여기 한 줄만 더하면 됨)
-IIS3DWB_USB_IDS = {
-    ("04B4", "0003"),   # Cypress USB-UART LP (현재 양산 보드)
-}
-
 # 측정 속도 선택지 (label, stream_rate 값)  — Rust GUI 와 동일한 기본/순서
 RATE_OPTIONS = [
     ("3.3 kHz · 일반 모니터링 (기본·권장)", 1),
@@ -122,12 +115,12 @@ def flash_nvs(port, bin_path):
 
 
 def list_serial_ports():
-    """USB 로 연결된 시리얼 포트만 라벨과 함께 반환.
+    """USB 로 연결된 시리얼 포트 경로만 반환.
 
     라즈베리파이 내장 UART(`/dev/ttyAMA*`) 등은 IIS3DWB 와 무관하므로 제외해
-    사용자가 어느 포트가 센서인지 헷갈리지 않도록 한다.
+    사용자가 어느 포트가 센서인지 헷갈리지 않도록 한다. (포트 경로만 표시)
     """
-    labels = []
+    ports = []
     try:
         from serial.tools import list_ports
         for p in list_ports.comports():
@@ -135,15 +128,7 @@ def list_serial_ports():
             # USB VID/PID 가 잡히는 포트만 (USB 로 꽂힌 디바이스)
             if "USB" not in hwid and "VID" not in hwid:
                 continue
-            # VID:PID 추출 → IIS3DWB 보드면 센서 이름으로 표시
-            m = re.search(r"VID:PID=([0-9A-F]{4}):([0-9A-F]{4})", hwid)
-            vid_pid = (m.group(1), m.group(2)) if m else None
-            if vid_pid in IIS3DWB_USB_IDS:
-                tag = "IIS3DWB 센서"
-            else:
-                desc = (p.description or "").strip()
-                tag = desc if desc and desc.lower() != "n/a" else ""
-            labels.append(f"{p.device}  ({tag})" if tag else p.device)
+            ports.append(p.device)
     except Exception:
         # 폴백: /dev 스캔 (Linux/macOS) — USB UART 패턴만
         dev = Path("/dev")
@@ -151,12 +136,12 @@ def list_serial_ports():
             for entry in dev.iterdir():
                 name = str(entry)
                 if any(h in name for h in DEFAULT_PORT_HINTS):
-                    labels.append(name)
-    return sorted(set(labels))
+                    ports.append(name)
+    return sorted(set(ports))
 
 
 def port_device(label):
-    """콤보박스 라벨에서 실제 디바이스 경로만 추출."""
+    """콤보박스 값에서 실제 디바이스 경로만 추출 (이제 경로 그대로지만 안전 보강)."""
     if not label:
         return ""
     return label.split("  ")[0].strip()
