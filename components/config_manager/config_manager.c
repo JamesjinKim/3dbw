@@ -135,15 +135,30 @@ bool config_manager_has_stream(void)
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
         return false;
     }
+    /* 시리얼(USB 직결) 모드는 서버 IP를 쓰지 않으므로 IP 유무로 판단하면 안 된다.
+     * PC 툴이 빈 IP를 기록하면 1바이트(NUL)로 저장되어 설정이 없다고 오판한다. */
+    uint8_t transport = 0;
+    bool serial = (nvs_get_u8(h, NVS_KEY_TRANSP, &transport) == ESP_OK && transport == 2);
+
     size_t len = 0;
     esp_err_t ret = nvs_get_str(h, NVS_KEY_SRV_IP, NULL, &len);
     nvs_close(h);
-    return (ret == ESP_OK && len > 1);  // IP 문자열이 있어야 설정됨
+
+    if (serial) {
+        return true;  // 시리얼 모드는 IP와 무관하게 설정됨
+    }
+    return (ret == ESP_OK && len > 1);  // WiFi 모드/구형 디바이스: IP 문자열이 있어야 설정됨
 }
 
 esp_err_t config_manager_save_stream(const config_stream_t *cfg)
 {
-    if (cfg == NULL || strlen(cfg->server_ip) == 0 ||
+    if (cfg == NULL) {
+        ESP_LOGE(TAG, "잘못된 스트리밍 설정 (NULL)");
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* 시리얼(USB 직결, transport==2) 모드는 서버 IP가 없는 것이 정상이다.
+     * has_stream 판정과 같은 규칙을 써서, 빈 IP를 거부하지 않는다. */
+    if ((cfg->transport != 2 && strlen(cfg->server_ip) == 0) ||
         strlen(cfg->server_ip) > CONFIG_MGR_IP_MAX_LEN) {
         ESP_LOGE(TAG, "잘못된 스트리밍 설정 (server_ip)");
         return ESP_ERR_INVALID_ARG;
