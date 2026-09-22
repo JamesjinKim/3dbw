@@ -23,13 +23,14 @@ extern "C" {
 
 /* 패킷 프로토콜 (수신 프로그램과 일치해야 함) */
 #define STREAM_MAGIC        0x49495333u  /* "IIS3" */
-#define STREAM_PROTO_VER    1
-#define STREAM_SAMPLES_PER_PACKET 200    /* 200샘플 × 6B = 1200B + 16B 헤더 */
+#define STREAM_PROTO_VER    2
+#define STREAM_SAMPLES_PER_PACKET 200    /* 200샘플 × 6B = 1200B + 18B 헤더 = 1218B */
 
 /* 전송 프로토콜 */
 typedef enum {
-    STREAM_TRANSPORT_UDP = 0,
-    STREAM_TRANSPORT_TCP = 1,
+    STREAM_TRANSPORT_UDP    = 0,
+    STREAM_TRANSPORT_TCP    = 1,
+    STREAM_TRANSPORT_SERIAL = 2,   /* USB 직결 — 로그를 끄고 패킷만 전송 */
 } stream_transport_type_t;
 
 /**
@@ -42,6 +43,7 @@ typedef struct {
     uint8_t rate_step;          /**< 샘플레이트 단계 0~4 */
     stream_transport_type_t transport; /**< 전송 프로토콜 */
     uint8_t read_mode;          /**< 0=폴링(자동), 1=인터럽트 (FIFO 모드에서만 적용) */
+    uint8_t full_scale_g;       /**< 측정 범위 2/4/8/16 (g) — 패킷 헤더에 실어 보냄 */
 } sensor_streamer_config_t;
 
 /**
@@ -63,7 +65,7 @@ uint32_t sensor_streamer_rate_hz(uint8_t rate_step);
 /**
  * @brief 스트리밍 시작 (sensor_task + tx_task 생성, 소켓 오픈)
  *
- * @param cfg 설정 (sensor, server_ip 필수)
+ * @param cfg 설정 (sensor 필수, server_ip는 시리얼 전송이 아닐 때 필수)
  * @return ESP_OK 성공, 그 외 실패
  */
 esp_err_t sensor_streamer_start(const sensor_streamer_config_t *cfg);

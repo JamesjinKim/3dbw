@@ -21,6 +21,7 @@
 #include "freertos/ringbuf.h"
 #include "freertos/semphr.h"
 #include "driver/gpio.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
@@ -49,14 +50,17 @@ static const char *TAG = "STREAMER";
  * 64샘플 ≈ 2.4ms → 초당 ~416 INT, 무난한 부하. */
 #define STREAM_INT_WTM      IIS3DWB_FIFO_BURST_MAX  /* 64 */
 
-/* 패킷 헤더 (16바이트) — 수신 프로그램과 바이트 단위로 일치해야 함 */
+/* 패킷 헤더 (18바이트, v2) — 수신 프로그램과 바이트 단위로 일치해야 함.
+ * v2에서 full_scale_g 추가: 수신 측이 감도를 가정하지 않고 환산할 수 있다. */
 typedef struct __attribute__((packed)) {
-    uint32_t magic;        /* STREAM_MAGIC */
-    uint8_t  version;      /* STREAM_PROTO_VER */
-    uint8_t  rate_step;    /* 0~4 */
-    uint16_t sample_count; /* 이 패킷의 샘플 수 */
-    uint32_t seq;          /* 패킷 시퀀스 번호 */
-    uint32_t timestamp_ms; /* 부팅 후 ms */
+    uint32_t magic;         /* STREAM_MAGIC */
+    uint8_t  version;       /* STREAM_PROTO_VER (=2) */
+    uint8_t  rate_step;     /* 0~4 */
+    uint16_t sample_count;  /* 이 패킷의 샘플 수 */
+    uint32_t seq;           /* 패킷 시퀀스 번호 */
+    uint32_t timestamp_ms;  /* 부팅 후 ms */
+    uint8_t  full_scale_g;  /* 측정 범위 2/4/8/16 (g) */
+    uint8_t  reserved;      /* 0 — 정렬 및 향후 확장 */
 } stream_header_t;
 
 /* 모듈 상태 */
@@ -74,6 +78,9 @@ static struct {
     SemaphoreHandle_t fifo_sem;  /* ISR → 태스크 깨움 */
     bool int_enabled;            /* INT 모드 사용 중인지 (fallback 시 false) */
     uint32_t int_count;          /* INT 발생 횟수 (진단) */
+    /* USB 직결 전송 */
+    bool usb_installed;          /* USB 드라이버 설치 여부 (stop에서 정리 판단) */
+    esp_log_level_t saved_log;   /* 스트리밍 전 로그 레벨 (복원용) */
 } s = {0};
 
 /* FIFO watermark ISR: 세마포어 give + 해당 핀 INT 일시 비활성화.
@@ -284,13 +291,42 @@ static void sensor_task_fifo(void *arg)
 }
 
 /* ===================== 전송 태스크 (소비자) ===================== */
+
+/* 조립된 패킷을 설정된 전송 수단으로 내보낸다.
+ * 패킷 포맷은 전송 수단과 무관하게 동일하므로, 여기서만 갈라진다.
+ * 반환: 전송 바이트 수(>=0) 또는 실패(<0) */
+static int tx_send(const uint8_t *packet, size_t len)
+{
+    if (s.cfg.transport == STREAM_TRANSPORT_SERIAL) {
+        return usb_serial_jtag_write_bytes(packet, len, pdMS_TO_TICKS(100));
+    }
+
+    /* UDP: ENOMEM(lwip TX 버퍼 일시 부족) 시 양보하며 재시도.
+     * INT 모드는 버스트로 몰려 순간 버퍼 고갈이 잦음 → 최대 8회 재시도. */
+    int sent = -1;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        sent = sendto(s.sock, packet, len, 0,
+                      (struct sockaddr *)&s.dest, sizeof(s.dest));
+        if (sent >= 0) break;
+        if (errno != ENOMEM) break;   /* 다른 오류는 재시도 무의미 */
+        vTaskDelay(1);                 /* 버퍼 회복 대기 */
+    }
+    return sent;
+}
+
 /*
- * 링버퍼에서 샘플을 모아 패킷(헤더+샘플배열)으로 조립 후 UDP 전송.
+ * 링버퍼에서 샘플을 모아 패킷(헤더+샘플배열)으로 조립 후 전송(UDP 또는 USB).
  */
 static void tx_task(void *arg)
 {
-    ESP_LOGI(TAG, "전송 태스크 시작 (서버 %s:%u)",
-             s.cfg.server_ip, s.cfg.server_port);
+    if (s.cfg.transport == STREAM_TRANSPORT_SERIAL) {
+        /* 시리얼 모드는 server_ip 가 없을 수 있다(NULL) → 참조하지 않는다.
+         * (이 시점에는 로그가 이미 꺼져 있어 실제로 출력되지는 않는다.) */
+        ESP_LOGI(TAG, "전송 태스크 시작 (USB 직결)");
+    } else {
+        ESP_LOGI(TAG, "전송 태스크 시작 (서버 %s:%u)",
+                 s.cfg.server_ip, s.cfg.server_port);
+    }
 
     /* 패킷 버퍼: 헤더 + 최대 샘플 */
     static uint8_t packet[sizeof(stream_header_t) + STREAM_SAMPLES_PER_PACKET * SAMPLE_BYTES];
@@ -318,18 +354,11 @@ static void tx_task(void *arg)
             h->sample_count = collected;
             h->seq = s.seq++;
             h->timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            h->full_scale_g = s.cfg.full_scale_g;
+            h->reserved = 0;
 
             size_t len = sizeof(stream_header_t) + collected * SAMPLE_BYTES;
-            int sent = -1;
-            /* ENOMEM(lwip TX 버퍼 일시 부족) 시 양보하며 재시도.
-             * INT 모드는 버스트로 몰려 순간 버퍼 고갈이 잦음 → 최대 8회 재시도. */
-            for (int attempt = 0; attempt < 8; attempt++) {
-                sent = sendto(s.sock, packet, len, 0,
-                              (struct sockaddr *)&s.dest, sizeof(s.dest));
-                if (sent >= 0) break;
-                if (errno != ENOMEM) break;   /* 다른 오류는 재시도 무의미 */
-                vTaskDelay(1);                 /* 버퍼 회복 대기 */
-            }
+            int sent = tx_send(packet, len);
             if (sent >= 0) {
                 s.stats.packets_sent++;
                 s.stats.samples_sent += collected;
@@ -347,7 +376,11 @@ static void tx_task(void *arg)
 
 esp_err_t sensor_streamer_start(const sensor_streamer_config_t *cfg)
 {
-    if (!cfg || !cfg->sensor || !cfg->server_ip) {
+    if (!cfg || !cfg->sensor) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* 시리얼(USB 직결)은 서버가 없으므로 server_ip 가 필요 없다. */
+    if (cfg->transport != STREAM_TRANSPORT_SERIAL && !cfg->server_ip) {
         return ESP_ERR_INVALID_ARG;
     }
     if (s.running) {
@@ -359,34 +392,61 @@ esp_err_t sensor_streamer_start(const sensor_streamer_config_t *cfg)
     s.cfg = *cfg;
     s.sock = -1;
 
-    /* 현재는 UDP만 구현 (TCP는 후속) */
-    if (cfg->transport != STREAM_TRANSPORT_UDP) {
-        ESP_LOGW(TAG, "TCP는 아직 미구현 — UDP로 진행");
-        s.cfg.transport = STREAM_TRANSPORT_UDP;
-    }
+    if (cfg->transport == STREAM_TRANSPORT_SERIAL) {
+        /* USB 직결: 소켓 대신 USB Serial/JTAG 드라이버를 쓴다.
+         * 기본 TX 버퍼(256B)는 패킷(1218B)보다 작아 매 전송이 블로킹되므로
+         * 반드시 키운다. 8KB ≈ 26.6kHz에서 약 50ms 분량. */
+        usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+        ucfg.tx_buffer_size = 8192;   /* rx_buffer_size 는 기본값(256) 유지 — 0이면 안 됨 */
+        esp_err_t uret = usb_serial_jtag_driver_install(&ucfg);
+        if (uret != ESP_OK) {
+            ESP_LOGE(TAG, "USB 드라이버 설치 실패: %s", esp_err_to_name(uret));
+            return uret;
+        }
+        s.usb_installed = true;
 
-    /* UDP 소켓 생성 */
-    s.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s.sock < 0) {
-        ESP_LOGE(TAG, "소켓 생성 실패");
-        return ESP_FAIL;
-    }
-    memset(&s.dest, 0, sizeof(s.dest));
-    s.dest.sin_family = AF_INET;
-    s.dest.sin_port = htons(cfg->server_port);
-    if (inet_aton(cfg->server_ip, &s.dest.sin_addr) == 0) {
-        ESP_LOGE(TAG, "잘못된 서버 IP: %s", cfg->server_ip);
-        close(s.sock);
-        s.sock = -1;
-        return ESP_ERR_INVALID_ARG;
+        /* 로그와 데이터가 같은 USB 포트를 쓰므로, 로그가 섞이면 패킷이 깨진다.
+         * 스트리밍 동안 로그를 끄고 stop에서 복원한다.
+         * (끄기 직전 이미 나간 바이트는 수신 측이 매직으로 재동기화한다.) */
+        s.saved_log = esp_log_level_get("*");
+        esp_log_level_set("*", ESP_LOG_NONE);
+    } else {
+        /* 현재는 UDP만 구현 (TCP는 후속) */
+        if (cfg->transport != STREAM_TRANSPORT_UDP) {
+            ESP_LOGW(TAG, "TCP는 아직 미구현 — UDP로 진행");
+            s.cfg.transport = STREAM_TRANSPORT_UDP;
+        }
+
+        /* UDP 소켓 생성 */
+        s.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (s.sock < 0) {
+            ESP_LOGE(TAG, "소켓 생성 실패");
+            return ESP_FAIL;
+        }
+        memset(&s.dest, 0, sizeof(s.dest));
+        s.dest.sin_family = AF_INET;
+        s.dest.sin_port = htons(cfg->server_port);
+        if (inet_aton(cfg->server_ip, &s.dest.sin_addr) == 0) {
+            ESP_LOGE(TAG, "잘못된 서버 IP: %s", cfg->server_ip);
+            close(s.sock);
+            s.sock = -1;
+            return ESP_ERR_INVALID_ARG;
+        }
     }
 
     /* 링버퍼 (바이트 단위, NO_SPLIT로 샘플 경계 유지) */
     s.ringbuf = xRingbufferCreate(RINGBUF_SIZE, RINGBUF_TYPE_NOSPLIT);
     if (!s.ringbuf) {
+        if (s.sock >= 0) {
+            close(s.sock);
+            s.sock = -1;
+        }
+        if (s.usb_installed) {
+            esp_log_level_set("*", s.saved_log);   /* 로그 복원 — 실패 원인 진단 */
+            usb_serial_jtag_driver_uninstall();
+            s.usb_installed = false;
+        }
         ESP_LOGE(TAG, "링버퍼 생성 실패");
-        close(s.sock);
-        s.sock = -1;
         return ESP_ERR_NO_MEM;
     }
 
@@ -401,10 +461,19 @@ esp_err_t sensor_streamer_start(const sensor_streamer_config_t *cfg)
     }
     xTaskCreate(tx_task, "strm_tx", 4096, NULL, 5, &s.tx_task_h);
 
-    ESP_LOGI(TAG, "스트리밍 시작 → %s:%u (%lu Hz, %s)",
-             cfg->server_ip, cfg->server_port,
-             sensor_streamer_rate_hz(cfg->rate_step),
-             cfg->rate_step == 0 ? "폴링" : "FIFO");
+    if (s.cfg.transport == STREAM_TRANSPORT_SERIAL) {
+        /* 이 시점에는 로그가 꺼져 있어 출력되지 않는다(포맷만 유지). */
+        ESP_LOGI(TAG, "스트리밍 시작 → USB 직결 (%lu Hz, %s, ±%ug)",
+                 sensor_streamer_rate_hz(cfg->rate_step),
+                 cfg->rate_step == 0 ? "폴링" : "FIFO",
+                 cfg->full_scale_g);
+    } else {
+        ESP_LOGI(TAG, "스트리밍 시작 → %s:%u (%lu Hz, %s, ±%ug)",
+                 cfg->server_ip, cfg->server_port,
+                 sensor_streamer_rate_hz(cfg->rate_step),
+                 cfg->rate_step == 0 ? "폴링" : "FIFO",
+                 cfg->full_scale_g);
+    }
     return ESP_OK;
 }
 
@@ -417,6 +486,13 @@ void sensor_streamer_stop(void)
     if (s.sock >= 0) {
         close(s.sock);
         s.sock = -1;
+    }
+    if (s.usb_installed) {
+        /* 남은 패킷이 호스트로 나갈 시간을 준 뒤 정리한다. */
+        usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
+        esp_log_level_set("*", s.saved_log);   /* 로그 복원 — 이후 진단 가능 */
+        usb_serial_jtag_driver_uninstall();
+        s.usb_installed = false;
     }
     if (s.ringbuf) {
         vRingbufferDelete(s.ringbuf);
