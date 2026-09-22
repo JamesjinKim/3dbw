@@ -544,3 +544,10 @@ void sensor_streamer_get_stats(sensor_streamer_stats_t *out)
         out->int_count = s.int_count;  /* ISR 카운터 (별도 보관) */
     }
 }
+
+bool sensor_streamer_is_serial_streaming(void)
+{
+    /* 다른 컴포넌트가 공유 USB 엔드포인트에 쓰기 전에 확인하는 술어.
+     * 스트리밍 중 printf 한 줄이 전송 중인 패킷을 깨뜨린다. */
+    return s.running && s.cfg.transport == STREAM_TRANSPORT_SERIAL;
+}

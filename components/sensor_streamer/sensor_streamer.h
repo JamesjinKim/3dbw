@@ -80,6 +80,20 @@ void sensor_streamer_stop(void);
  */
 void sensor_streamer_get_stats(sensor_streamer_stats_t *out);
 
+/**
+ * @brief 시리얼(USB 직결) 스트리밍이 동작 중인지 여부
+ *
+ * 시리얼 모드에서는 USB Serial/JTAG 엔드포인트를 패킷 스트림이 독점한다.
+ * 이때 다른 컴포넌트가 printf 등으로 같은 엔드포인트에 무언가를 쓰면
+ * 전송 중인 패킷 한가운데에 바이트가 끼어들어 그 패킷이 깨진다.
+ * (로그 레벨을 NONE으로 낮춰도 printf 는 막히지 않는다 — 레벨 검사는
+ *  esp_log_writev 안에 있고, 콘솔 VFS 의 USB 복제는 그와 무관하다.)
+ * 공유 엔드포인트에 쓰기 전에 이 술어로 확인하라고 공개한 함수다.
+ *
+ * @return true 시리얼 스트리밍 중 (USB 포트에 쓰지 말 것)
+ */
+bool sensor_streamer_is_serial_streaming(void);
+
 #ifdef __cplusplus
 }
 #endif

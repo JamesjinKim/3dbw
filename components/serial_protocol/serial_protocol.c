@@ -9,6 +9,7 @@
 #include "serial_protocol.h"
 #include "config_manager.h"
 #include "wifi_manager.h"
+#include "sensor_streamer.h"   /* 스트리밍 중 USB 출력 억제 판단 */
 
 #include <string.h>
 #include <stdio.h>
@@ -44,9 +45,23 @@ static const char *TAG = "SERIAL_PROTO";
  *
  * 콘솔(USB Serial/JTAG)과 동일한 stdout 경로로 출력합니다.
  * PC 툴은 "#RESP#" 접두사로 응답과 로그를 구분합니다.
+ *
+ * 단, 시리얼(USB 직결) 스트리밍 중에는 아무것도 출력하지 않는다.
+ * 같은 USB 엔드포인트로 패킷이 나가는 중이라 응답 한 줄(약 40바이트)이
+ * 1218바이트 패킷 한가운데에 끼어들어 그 패킷을 통째로 버리게 만든다.
+ * 수신기는 매직값으로 재동기화하므로 복구는 되지만, 손실이 조용히 발생하고
+ * send_errors 카운터에도 잡히지 않는다.
+ *
+ * 주의: 명령 자체는 정상적으로 파싱·실행된다. 억제되는 것은 "응답"뿐이므로,
+ * 스트리밍 중에 보낸 명령은 수행되지만 확인 응답은 돌아오지 않는다.
  */
 static void send_response(cJSON *resp)
 {
+    if (sensor_streamer_is_serial_streaming()) {
+        cJSON_Delete(resp);   /* 출력은 생략하되 객체는 반드시 해제 */
+        return;
+    }
+
     char *json = cJSON_PrintUnformatted(resp);
     if (json) {
         /* stdout(=USB JTAG 콘솔)으로 전송. PC 툴은 #RESP# 접두사로 식별 */
