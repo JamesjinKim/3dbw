@@ -79,7 +79,10 @@ static struct {
     bool int_enabled;            /* INT 모드 사용 중인지 (fallback 시 false) */
     uint32_t int_count;          /* INT 발생 횟수 (진단) */
     /* USB 직결 전송 */
-    bool usb_installed;          /* USB 드라이버 설치 여부 (stop에서 정리 판단) */
+    bool usb_installed;          /* 이 컴포넌트가 직접 설치했는가 (stop에서 uninstall 판단).
+                                  * serial_protocol 이 설치한 것을 공유할 때는 false —
+                                  * 남의 드라이버를 제거하면 명령 수신이 끊긴다. */
+    bool log_silenced;           /* 로그를 껐는가 (드라이버 소유권과 무관하게 복원 판단) */
     esp_log_level_t saved_log;   /* 스트리밍 전 로그 레벨 (복원용) */
 } s = {0};
 
@@ -400,21 +403,37 @@ esp_err_t sensor_streamer_start(const sensor_streamer_config_t *cfg)
     if (cfg->transport == STREAM_TRANSPORT_SERIAL) {
         /* USB 직결: 소켓 대신 USB Serial/JTAG 드라이버를 쓴다.
          * 기본 TX 버퍼(256B)는 패킷(1218B)보다 작아 매 전송이 블로킹되므로
-         * 반드시 키운다. 8KB ≈ 26.6kHz에서 약 50ms 분량. */
+         * 반드시 키운다. 8KB ≈ 26.6kHz에서 약 50ms 분량.
+         *
+         * 단, serial_protocol_start() 가 부팅 시 이미 이 드라이버를 설치해 두었고
+         * (명령 수신용), 드라이버는 재설치가 불가능하다 — 두 번째 install 은
+         * ESP_ERR_INVALID_STATE 를 반환한다. 그러므로 그 경우는 "이미 설치된
+         * 드라이버를 공유"로 보고 정상 진행한다. 해당 인스턴스는 serial_protocol
+         * 쪽에서 TX 8192 로 설치하므로 패킷 크기에도 맞는다.
+         *
+         * 이때 s.usb_installed 는 false 로 남겨 둔다 — 우리가 설치하지 않았고
+         * serial_protocol 이 계속 쓰고 있는 드라이버를 stop() 에서 제거하면
+         * 명령 수신 경로가 끊기기 때문이다(소유권 표시). */
         usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
-        ucfg.tx_buffer_size = 8192;   /* rx_buffer_size 는 기본값(256) 유지 — 0이면 안 됨 */
+        ucfg.tx_buffer_size = 8192;   /* rx_buffer_size 는 기본값 유지 — 0이면 안 됨 */
         esp_err_t uret = usb_serial_jtag_driver_install(&ucfg);
-        if (uret != ESP_OK) {
+        if (uret == ESP_OK) {
+            s.usb_installed = true;          /* 우리가 설치 → stop() 에서 해제 */
+        } else if (uret == ESP_ERR_INVALID_STATE) {
+            /* 이미 설치됨(정상 경로). 소유권을 주장하지 않는다. */
+            ESP_LOGI(TAG, "USB 드라이버가 이미 설치됨 — 기존 인스턴스 공유");
+        } else {
+            /* NO_MEM / INVALID_ARG 등 진짜 실패는 그대로 치명적으로 처리 */
             ESP_LOGE(TAG, "USB 드라이버 설치 실패: %s", esp_err_to_name(uret));
             return uret;
         }
-        s.usb_installed = true;
 
         /* 로그와 데이터가 같은 USB 포트를 쓰므로, 로그가 섞이면 패킷이 깨진다.
          * 스트리밍 동안 로그를 끄고 stop에서 복원한다.
          * (끄기 직전 이미 나간 바이트는 수신 측이 매직으로 재동기화한다.) */
         s.saved_log = esp_log_level_get("*");
         esp_log_level_set("*", ESP_LOG_NONE);
+        s.log_silenced = true;   /* 드라이버를 공유하든 직접 설치했든 복원 대상 */
     } else {
         /* 현재는 UDP만 구현 (TCP는 후속) */
         if (cfg->transport != STREAM_TRANSPORT_UDP) {
@@ -446,8 +465,11 @@ esp_err_t sensor_streamer_start(const sensor_streamer_config_t *cfg)
             close(s.sock);
             s.sock = -1;
         }
-        if (s.usb_installed) {
+        if (s.log_silenced) {
             esp_log_level_set("*", s.saved_log);   /* 로그 복원 — 실패 원인 진단 */
+            s.log_silenced = false;
+        }
+        if (s.usb_installed) {   /* 우리가 설치한 경우에만 해제 (공유 인스턴스는 유지) */
             usb_serial_jtag_driver_uninstall();
             s.usb_installed = false;
         }
@@ -492,10 +514,19 @@ void sensor_streamer_stop(void)
         close(s.sock);
         s.sock = -1;
     }
-    if (s.usb_installed) {
-        /* 남은 패킷이 호스트로 나갈 시간을 준 뒤 정리한다. */
+    if (s.cfg.transport == STREAM_TRANSPORT_SERIAL) {
+        /* 남은 패킷이 호스트로 나갈 시간을 준 뒤 정리한다.
+         * (드라이버를 공유 중이어도 배수는 필요 — 로그를 되살리기 전에
+         *  남은 패킷 바이트를 모두 내보내야 섞이지 않는다.) */
         usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
+    }
+    if (s.log_silenced) {
         esp_log_level_set("*", s.saved_log);   /* 로그 복원 — 이후 진단 가능 */
+        s.log_silenced = false;
+    }
+    if (s.usb_installed) {
+        /* 우리가 설치한 드라이버만 해제한다. serial_protocol 이 설치한
+         * 공유 인스턴스를 제거하면 PC 설정 툴의 명령 수신이 끊긴다. */
         usb_serial_jtag_driver_uninstall();
         s.usb_installed = false;
     }

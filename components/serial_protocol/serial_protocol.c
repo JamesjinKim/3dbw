@@ -304,8 +304,15 @@ void serial_protocol_start(void)
 {
     /* 콘솔이 USB JTAG를 secondary로 사용 중. 우리 드라이버를 설치하여
      * RX(입력)를 직접 수신한다. (콘솔이 이미 설치했으면 INVALID_STATE → 무시) */
+    /* TX 8KB: 이 드라이버 인스턴스는 sensor_streamer(USB 직결 모드)와 공유된다.
+     * 드라이버는 재설치가 불가능하므로(두 번째 install 은 INVALID_STATE),
+     * 여기서 설치하는 이 하나가 스트리밍에도 그대로 쓰인다.
+     * 스트리밍 패킷은 1218B라 TX 링이 작으면 매 전송이 블로킹된다.
+     * 8KB ≈ 26.6kHz에서 약 50ms 분량.
+     * RX 1KB: 명령 수신용으로 충분하며, 드라이버가 64B 초과를 요구한다
+     * (usb_serial_jtag.c: rx_buffer_size > USB_SER_JTAG_RX_MAX_SIZE). */
     usb_serial_jtag_driver_config_t cfg = {
-        .tx_buffer_size = 1024,
+        .tx_buffer_size = 8192,
         .rx_buffer_size = 1024,
     };
     esp_err_t ret = usb_serial_jtag_driver_install(&cfg);
