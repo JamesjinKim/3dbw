@@ -24,6 +24,8 @@ WiFi가 없거나 불안정한 현장, 또는 PC에 직결해 바로 데이터�
 | 기본 속도 | 3.3 kHz (WiFi와 동일) |
 | 복구 경로 | 부팅 후 3초 명령 대기 창 |
 | 공장 초기화 범위 | 설정(NVS)만 삭제, 펌웨어 유지 |
+| 패킷 헤더 | **v2로 확장 — 풀스케일 정보 포함** (9장) |
+| 풀스케일 | **GUI에서 선택 → NVS 저장** (빌드타임 고정 → 런타임 설정) |
 
 ### 범위 밖 (별도 진행)
 
@@ -134,12 +136,12 @@ static int tx_send(const uint8_t *packet, size_t len)
 ### 3.5 TX 버퍼 크기 — 기본값 사용 금지
 
 **ESP-IDF 기본값은 256바이트다** (`USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT`).
-패킷 하나가 1,216바이트이므로 기본값을 쓰면 **매 전송마다 블로킹**이 발생한다.
+패킷 하나가 1,218바이트(v2)이므로 기본값을 쓰면 **매 전송마다 블로킹**이 발생한다.
 tx_task가 막히면 링버퍼가 차고 센서 샘플이 유실된다.
 
 ```c
 usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
-ucfg.tx_buffer_size = 8192;   /* 패킷 1216B × 약 6.7개 분량 */
+ucfg.tx_buffer_size = 8192;   /* 패킷 1218B × 약 6.7개 분량 */
 ```
 
 **8192B 선정 근거**: 26.6 kHz에서 초당 약 133패킷(162 KB/s)이 발생한다.
@@ -162,23 +164,35 @@ ucfg.tx_buffer_size = 8192;   /* 패킷 1216B × 약 6.7개 분량 */
 
 ## 4. NVS 설정 구조 (config_manager)
 
-### 4.1 구조체 변경 없음
+### 4.1 구조체 변경
 
 ```c
 typedef struct {
     char     server_ip[CONFIG_MGR_IP_MAX_LEN + 1];
     uint16_t server_port;
     uint8_t  rate_step;
-    uint8_t  transport;   /* 0=UDP, 1=TCP, 2=USB시리얼 ← 값 2 추가 */
+    uint8_t  transport;     /* 0=UDP, 1=TCP, 2=USB시리얼 ← 값 2 추가 */
     uint8_t  read_mode;
+    uint8_t  full_scale_g;  /* 2/4/8/16 ← 신규 (9장) */
 } config_stream_t;
 ```
 
-필드 추가 없이 `transport` 가 받는 **값의 범위만 확장**한다.
+`transport` 는 받는 **값의 범위만 확장**하고, `full_scale_g` 필드를 새로 추가한다.
 
-**기존 디바이스 호환성**: NVS 네임스페이스(`devcfg`)와 키가 그대로이므로,
-이미 설정된 디바이스는 `transport=0` 으로 읽혀 기존 UDP 동작을 유지한다.
-마이그레이션 불필요.
+**`full_scale_g` 에 사람이 읽는 값(2/4/8/16)을 저장한다.**
+레지스터 코드값(`IIS3DWB_FS_*`)은 순서가 직관과 어긋나므로(±16g가 `0x04`,
+±8g가 `0x0C`) 설정·전송 단계에서 쓰면 실수하기 쉽다.
+센서에 적용할 때만 코드값으로 변환한다.
+
+### 4.2 기존 디바이스 호환성
+
+NVS 네임스페이스(`devcfg`)와 기존 키가 그대로이므로 이미 설정된 디바이스는
+`transport=0` 으로 읽혀 기존 UDP 동작을 유지한다.
+
+**신규 키 `full_scale_g` 는 구형 디바이스 NVS에 없다.**
+`config_manager_load_stream()` 은 이 키가 없으면(`ESP_ERR_NVS_NOT_FOUND`)
+**기본값 4(±4g)로 채운다** — 현재 빌드타임 기본값과 같으므로 동작이 바뀌지 않는다.
+이 폴백이 없으면 구형 디바이스에서 `full_scale_g=0` 이 되어 감도 계산이 깨진다.
 
 ### 4.2 시리얼 모드에서 server_ip 처리
 
@@ -244,8 +258,10 @@ typedef struct {
 
 | 선택 | 표시할 입력란 |
 |------|-------------|
-| WiFi | WiFi SSID/비번 + 서버 IP/포트 + 속도 + 읽기방식 (현재와 동일) |
-| USB 직결 | 속도 + 읽기방식만 |
+| WiFi | WiFi SSID/비번 + 서버 IP/포트 + 속도 + 읽기방식 + **측정 범위** |
+| USB 직결 | 속도 + 읽기방식 + **측정 범위** |
+
+**측정 범위(풀스케일)** 는 전송 방식과 무관하게 항상 표시한다 — 9.4 참조.
 
 USB 선택 시 안내 문구:
 
@@ -302,46 +318,87 @@ magic(`0x49495333`)을 스캔해 유효 패킷 수를 센다.
 **이 장은 라즈베리파이(EDU Kit WDAQ) 수신 프로그램 개발의 입력 사양이다.**
 아래 값은 모두 현재 펌웨어 코드에서 확인한 실제 값이다.
 
-### 7.1 패킷 구조
+### 7.1 패킷 구조 (v2)
 
 ```c
-/* 16바이트 헤더 — packed, 리틀엔디안 */
+/* 18바이트 헤더 — packed, 리틀엔디안 */
 typedef struct __attribute__((packed)) {
-    uint32_t magic;        /* 0x49495333 ("IIS3") */
-    uint8_t  version;      /* 1 */
-    uint8_t  rate_step;    /* 0~4 */
-    uint16_t sample_count; /* 이 패킷의 샘플 수 */
-    uint32_t seq;          /* 패킷 시퀀스 번호 */
-    uint32_t timestamp_ms; /* 부팅 후 경과 ms */
+    uint32_t magic;         /* 0x49495333 ("IIS3") */
+    uint8_t  version;       /* 2 */
+    uint8_t  rate_step;     /* 0~4 */
+    uint16_t sample_count;  /* 이 패킷의 샘플 수 */
+    uint32_t seq;           /* 패킷 시퀀스 번호 */
+    uint32_t timestamp_ms;  /* 부팅 후 경과 ms */
+    uint8_t  full_scale_g;  /* 2/4/8/16 ← v2 신규 */
+    uint8_t  reserved;      /* 0 — 정렬 및 향후 확장 */
 } stream_header_t;
 ```
 
 헤더 뒤에 `sample_count × 3 × int16` (리틀엔디안) 샘플 배열이 따른다.
 샘플 1개 = X, Y, Z 각 int16 = 6바이트.
 
-**Python 파싱 (기존 udp_receiver.py와 동일):**
+**Python 파싱 (버전 분기):**
 
 ```python
 MAGIC = 0x49495333
-HEADER = struct.Struct("<IBBHII")   # 16 bytes
-magic, ver, rate_step, count, seq, ts = HEADER.unpack_from(data, 0)
-samples = struct.unpack_from("<%dh" % (count * 3), data, HEADER.size)
+HEADER_V1 = struct.Struct("<IBBHII")     # 16 bytes (구형)
+HEADER_V2 = struct.Struct("<IBBHIIBB")   # 18 bytes (신규)
+
+magic, ver = struct.unpack_from("<IB", data, 0)
+if magic != MAGIC:
+    return None                           # 재동기 필요
+
+if ver >= 2:
+    _, _, rate_step, count, seq, ts, fs_g, _ = HEADER_V2.unpack_from(data, 0)
+    hdr_size = HEADER_V2.size
+else:
+    _, _, rate_step, count, seq, ts = HEADER_V1.unpack_from(data, 0)
+    hdr_size = HEADER_V1.size
+    fs_g = args.fs                        # v1은 사용자 지정 필요
+
+samples = struct.unpack_from("<%dh" % (count * 3), data, hdr_size)
 ```
+
+> `ver >= 2` 로 비교하면 향후 v3가 나와도 헤더 앞부분 레이아웃이 유지되는 한
+> 이 코드가 계속 동작한다.
 
 ### 7.2 패킷 크기
 
 | 항목 | 값 |
 |------|-----|
 | 패킷당 샘플 수 | 200 (`STREAM_SAMPLES_PER_PACKET`) |
-| 헤더 | 16 B |
+| 헤더 (v2) | 18 B |
 | 페이로드 | 200 × 6 = 1,200 B |
-| **총 패킷 크기** | **1,216 B** |
+| **총 패킷 크기 (v2)** | **1,218 B** |
+
+> v1은 헤더 16 B, 총 1,216 B였다. 2장의 대역폭 계산은 헤더 2바이트 증가분
+> (샘플당 0.01 B)을 포함해도 결론이 바뀌지 않는다.
 
 ### 7.3 rate_step → 샘플레이트 매핑
 
 ```python
 RATE_HZ = {0: 1000, 1: 3333, 2: 6667, 3: 13333, 4: 26667}
 ```
+
+### 7.3.1 raw → 물리 단위 환산
+
+**`full_scale_g` 를 헤더에서 읽어 감도를 정한다. 사용자 설정이 필요 없다.**
+
+```python
+SENSITIVITY = {2: 0.061, 4: 0.122, 8: 0.244, 16: 0.488}   # mg/LSB
+
+sens = SENSITIVITY[fs_g]        # 헤더에서 읽은 값
+mg   = raw * sens
+g    = mg / 1000.0
+m_s2 = g * 9.80665
+```
+
+샘플은 int16이므로 `struct` 가 부호를 처리한다. 별도 보정이 불필요하다.
+
+**검증 — 중력 1g 확인**: 센서를 수평에 놓고 정지시키면 한 축이 약 ±1000 mg
+(±4g 기준 raw 약 8,200), 나머지 두 축은 0 근처가 되어야 한다.
+자세와 무관하게 **세 축 합성 √(x²+y²+z²) ≈ 1000 mg** 이면 환산이 정확하다.
+수신기 시작 시 이 검사를 자동으로 수행하고 결과를 표시할 것을 권한다.
 
 ### 7.4 시리얼 포트 설정
 
@@ -384,11 +441,11 @@ RATE_HZ = {0: 1000, 1: 3333, 2: 6667, 3: 13333, 4: 26667}
 
 | # | 대상 | 변경 내용 | 검증 환경 |
 |---|------|----------|----------|
-| 1 | `components/sensor_streamer/` | `STREAM_TRANSPORT_SERIAL` 추가, `tx_send()` 분기, 로그 차단/복원 | 라즈베리파이 |
-| 2 | `components/config_manager/` | `transport` 값 2 수용 (구조체 불변) | 라즈베리파이 |
-| 3 | `main/main.c` | 시리얼이면 WiFi 건너뜀 + 3초 명령 대기 창 | 라즈베리파이 |
-| 4 | `config-tool/src-tauri/` | `transport` 파라미터, `verify_serial_stream`, `factory_reset` | macOS |
-| 5 | `config-tool/ui/` | 전송 방식 선택 UI, 조건부 입력란, 공장 초기화 버튼 | macOS |
+| 1 | `components/sensor_streamer/` | `STREAM_TRANSPORT_SERIAL` 추가, `tx_send()` 분기, 로그 차단/복원, **v2 헤더** | 라즈베리파이 |
+| 2 | `components/config_manager/` | `transport` 값 2 수용, **`full_scale_g` 필드 추가** | 라즈베리파이 |
+| 3 | `main/main.c` | 시리얼이면 WiFi 건너뜀 + 3초 명령 대기 창, **NVS 풀스케일 적용** | 라즈베리파이 |
+| 4 | `config-tool/src-tauri/` | `transport`·**`full_scale_g`** 파라미터, `verify_serial_stream`, `factory_reset` | macOS |
+| 5 | `config-tool/ui/` | 전송 방식 선택 UI, 조건부 입력란, 공장 초기화 버튼, **측정 범위 선택** | macOS |
 
 **범위 밖**: 수신 프로그램 (WDAQ에서 별도 진행, 7장 계약 참조)
 
@@ -405,13 +462,91 @@ RATE_HZ = {0: 1000, 1: 3333, 2: 6667, 3: 13333, 4: 26667}
 | **고속 유실 검증** | 26.6 kHz에서 `dropped` 통계 — 실제 상한 확정. 유실 시 TX 버퍼(3.5) 상향 후 재측정 |
 | 로그 차단 | 스트리밍 중 패킷에 로그 텍스트가 섞이지 않는지 |
 | 복구 경로 | 시리얼 모드 디바이스를 GUI로 되돌릴 수 있는지 |
-| 기존 호환성 | 이미 설정된 WiFi 디바이스가 영향받지 않는지 |
+| 기존 호환성 | 이미 설정된 WiFi 디바이스가 영향받지 않는지 (구형 NVS → `full_scale_g` 기본값 4) |
 | 공장 초기화 | 설정 삭제 후 재설정 가능한지, 펌웨어 유지되는지 |
+| **환산 정확도** | 각 풀스케일에서 중력 1g 테스트 — 합성값 ≈ 1000 mg (9.4) |
 
 ---
 
-## 9. 미해결 사항
+## 9. 스케일 정보 전달 설계
+
+### 9.1 해결하려는 문제
+
+v1 헤더에는 풀스케일 정보가 없어, 수신 측이 감도를 **가정**해야 했다.
+가정이 틀리면 **오류 없이 숫자만 조용히 틀린다** — 예외도 로그도 없이
+값이 2배나 절반으로 나오므로 발견이 어렵다.
+
+또한 풀스케일이 빌드타임 상수(`CONFIG_IIS3DWB_FULL_SCALE`)여서
+현장에서 측정 범위를 바꾸려면 재빌드·재플래시가 필요했다.
+
+### 9.2 해결 방향
+
+| 축 | 변경 |
+|----|------|
+| **전달** | 헤더 v2에 `full_scale_g` 포함 → 패킷이 스스로 스케일을 알림 |
+| **설정** | 빌드타임 상수 → NVS 설정 → GUI에서 선택 |
+
+이로써 사용자가 수신기에 스케일을 지정할 필요가 없어지고,
+설정과 데이터가 **구조적으로 어긋날 수 없게** 된다.
+
+`rate_step` 이 이미 헤더에 있으므로, 같은 성격의 메타데이터인 풀스케일을
+넣는 것이 일관적이다.
+
+### 9.3 펌웨어 적용 경로
+
+런타임 변경 API가 이미 존재한다 — `iis3dwb_set_full_scale()` 은
+레지스터 설정과 함께 `handle->sensitivity` 도 갱신한다.
+
+```
+NVS full_scale_g (2/4/8/16)
+  ↓  코드값 변환 (2→0x00, 4→0x08, 8→0x0C, 16→0x04)
+iis3dwb_init() 의 config.full_scale
+  ↓
+센서 CTRL1_XL 레지스터
+  ↓  그리고 별도로
+패킷 헤더 full_scale_g (사람이 읽는 값 그대로)
+```
+
+**주의**: 열거형 코드값은 순서가 직관과 어긋난다(±16g가 `0x04`, ±8g가 `0x0C`).
+변환표를 한 곳에만 두고 재사용해야 한다.
+
+### 9.4 GUI 측정 범위 선택
+
+2단계 화면에 추가한다. 속도 선택과 같은 형식으로, 용도 라벨을 함께 표시한다.
+
+| 선택 | 라벨 | 감도 |
+|------|------|------|
+| ±2g | 정밀 측정 (미세 진동) | 0.061 mg/LSB |
+| **±4g** | **일반 모니터링 (기본·권장)** | 0.122 mg/LSB |
+| ±8g | 강한 진동 | 0.244 mg/LSB |
+| ±16g | 충격·낙하 측정 | 0.488 mg/LSB |
+
+안내 문구:
+
+> 측정 범위를 넘는 진동은 잘려서 기록됩니다(클리핑).
+> 범위가 클수록 큰 진동을 측정할 수 있지만 미세한 변화의 분해능은 낮아집니다.
+
+기본값은 ±4g로, 현재 빌드타임 기본값과 같다.
+
+### 9.5 사용자 적용 절차
+
+변경 후 사용자가 할 일은 이렇게 단순해진다.
+
+1. GUI에서 측정 범위 선택 (기본 ±4g, 대부분 그대로 두면 됨)
+2. 설정 저장 → NVS 주입
+3. WDAQ 수신 프로그램 실행 — **스케일 지정 불필요**
+4. 수신기가 첫 패킷에서 스케일을 읽어 자동 적용하고 화면에 표시
+
+검증은 9.4의 중력 1g 테스트로 한다.
+
+---
+
+## 10. 미해결 사항
 
 1. **26.6 kHz 실제 달성 여부** — 2장 참조. USB Serial/JTAG FIFO 제약으로
    고속에서 유실이 발생할 수 있다. 실측 후 GUI 속도 옵션 상한을 조정할 수 있다.
 2. **TCP 전송** — 기존부터 미구현 상태(`STREAM_TRANSPORT_TCP`). 이번 범위 밖.
+3. **기존 수신기(udp_receiver.py) 갱신** — v2 헤더를 읽도록 수정이 필요하다.
+   범위 밖(WDAQ 작업)이지만, 기존 WiFi 수신 경로를 계속 쓴다면 갱신해야 한다.
+   v1 폴백을 두었으므로 당장 깨지지는 않으나, 갱신 전까지는 `--fs` 수동
+   지정이 계속 필요하다.
