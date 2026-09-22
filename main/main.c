@@ -7,6 +7,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
@@ -15,6 +16,7 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "led_strip.h"
 #include "wifi_manager.h"
 #include "config_manager.h"
 #include "serial_protocol.h"
@@ -30,6 +32,220 @@ static const char *TAG_SENSOR = "IIS3DWB";
 static iis3dwb_handle_t iis3dwb_handle;
 static bool iis3dwb_initialized = false;
 
+// ============================================================================
+// 상태 LED (멀리서 육안 확인용)
+// ----------------------------------------------------------------------------
+// 하드웨어는 Kconfig(Status LED Configuration)로 선택:
+//   · 기본  : 3핀 RGB LED GPIO 직결 (고객 센서 모듈, UV1 과 동일: R=8 G=3 B=46)
+//             LOW 에서 켜짐(공통 애노드). GPIO46 은 리셋 시 풀다운이라 부팅 직후 파랑.
+//   · WS2812: DevKitC 계열 RGB LED (GPIO48), led_strip 구동
+//
+// 상태 정의
+//   대기 BOOT : 전원은 들어왔지만 아직 "정상 동작" 판정 전 (부팅·초기화·WiFi 연결 시도)
+//               → 파랑 0.5초 깜빡임
+//   정상 OK   : WiFi 연결됨 + 진동 데이터가 실제로 흐르는 중
+//               → 초록 숨쉬기(2.5초 주기 페이드)
+//   이상 FAULT: WiFi 실패/끊김, 센서 초기화 실패, 읽기 오류 반복, 3초 데이터 정지,
+//               스트리밍 전송 오류 중 하나라도
+//               → 노랑 0.25초 빠른 깜빡임
+// ============================================================================
+typedef enum { LED_STATE_BOOT = 0, LED_STATE_OK, LED_STATE_FAULT } led_state_t;
+
+#define LED_BRIGHT        120   // WS2812 밝기 (0~255)
+#define LED_DATA_STALE_MS 3000  // 이 시간 동안 새 데이터가 없으면 "정지"로 판정
+
+static bool s_led_ready = false;
+static volatile led_state_t s_led_state = LED_STATE_BOOT;
+static volatile bool     s_sensor_init_failed = false;
+static volatile TickType_t s_last_data_tick = 0;
+static volatile uint32_t s_sensor_err_streak = 0;
+static volatile bool     s_led_monitor_started = false;   // true 가 되면 OK/FAULT 판정 시작
+static volatile TickType_t s_monitor_start_tick = 0;      // 감시 시작 시각 (데이터 유예 계산용)
+static bool              s_streaming_mode = false;
+
+#if CONFIG_STATUS_LED_WS2812
+// ---------------- WS2812 (DevKit) ----------------
+static led_strip_handle_t s_led_strip = NULL;
+static void led_rgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!s_led_ready) return;
+    // WS2812 는 매우 밝으므로 LED_BRIGHT 로 스케일
+    led_strip_set_pixel(s_led_strip, 0, r * LED_BRIGHT / 255, g * LED_BRIGHT / 255, b * LED_BRIGHT / 255);
+    led_strip_refresh(s_led_strip);
+}
+static bool led_hw_init(void)
+{
+    led_strip_config_t sc = { .strip_gpio_num = CONFIG_STATUS_LED_GPIO, .max_leds = 1 };
+    led_strip_rmt_config_t rc = { .resolution_hz = 10 * 1000 * 1000 };
+    if (led_strip_new_rmt_device(&sc, &rc, &s_led_strip) != ESP_OK) return false;
+    s_led_ready = true;
+    ESP_LOGI(TAG, "상태 LED: WS2812 (GPIO%d)", CONFIG_STATUS_LED_GPIO);
+    ESP_LOGI(TAG, "LED 색 자가진단: 빨강 → 초록 → 파랑 → 꺼짐 (각 0.5초)");
+    led_rgb(255, 0, 0); vTaskDelay(pdMS_TO_TICKS(500));
+    led_rgb(0, 255, 0); vTaskDelay(pdMS_TO_TICKS(500));
+    led_rgb(0, 0, 255); vTaskDelay(pdMS_TO_TICKS(500));
+    led_rgb(0, 0, 0);   vTaskDelay(pdMS_TO_TICKS(500));
+    return true;
+}
+#else
+// ---------------- 3핀 RGB LED, GPIO 직결 + LEDC PWM (고객 모듈 · UV1 과 동일 핀) ----------------
+// R=GPIO8, G=GPIO3, B=GPIO46 (기본). CONFIG_STATUS_LED_ACTIVE_LOW=y 면 LOW 가 켜짐.
+// LEDC 로 밝기를 조절해 "숨쉬기(breathing)" 같은 부드러운 표현이 가능하다.
+#include "driver/ledc.h"
+#define LED_R CONFIG_STATUS_LED_RED_GPIO
+#define LED_G CONFIG_STATUS_LED_GREEN_GPIO
+#define LED_B CONFIG_STATUS_LED_BLUE_GPIO
+#define LED_PWM_RES   LEDC_TIMER_10_BIT
+#define LED_PWM_MAX   1023
+static const ledc_channel_t s_led_ch[3] = { LEDC_CHANNEL_0, LEDC_CHANNEL_1, LEDC_CHANNEL_2 };
+
+/** 0~255 밝기 → LEDC duty (극성 반영) */
+static uint32_t led_duty(uint8_t level)
+{
+    uint32_t d = ((uint32_t)level * LED_PWM_MAX) / 255;
+#if CONFIG_STATUS_LED_ACTIVE_LOW
+    return LED_PWM_MAX - d;
+#else
+    return d;
+#endif
+}
+static void led_rgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!s_led_ready) return;
+    const uint8_t v[3] = { r, g, b };
+    for (int i = 0; i < 3; i++) {
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, s_led_ch[i], led_duty(v[i]));
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, s_led_ch[i]);
+    }
+}
+static bool led_hw_init(void)
+{
+    ledc_timer_config_t tc = {
+        .speed_mode = LEDC_LOW_SPEED_MODE, .timer_num = LEDC_TIMER_0,
+        .duty_resolution = LED_PWM_RES, .freq_hz = 5000, .clk_cfg = LEDC_AUTO_CLK,
+    };
+    if (ledc_timer_config(&tc) != ESP_OK) return false;
+    const int pins[3] = { LED_R, LED_G, LED_B };
+    for (int i = 0; i < 3; i++) {
+        gpio_reset_pin(pins[i]);
+        ledc_channel_config_t cc = {
+            .gpio_num = pins[i], .speed_mode = LEDC_LOW_SPEED_MODE,
+            .channel = s_led_ch[i], .timer_sel = LEDC_TIMER_0,
+            .duty = led_duty(0), .hpoint = 0,
+        };
+        if (ledc_channel_config(&cc) != ESP_OK) return false;
+    }
+    s_led_ready = true;
+    led_rgb(0, 0, 0);
+    ESP_LOGI(TAG, "상태 LED: 3핀 RGB(PWM)  R=GPIO%d G=GPIO%d B=GPIO%d (%s 에서 켜짐)",
+             LED_R, LED_G, LED_B, CONFIG_STATUS_LED_ACTIVE_LOW ? "LOW" : "HIGH");
+    ESP_LOGI(TAG, "LED 자가진단: 빨강 → 초록 → 파랑 → 꺼짐 (각 0.5초)");
+    led_rgb(255, 0, 0); vTaskDelay(pdMS_TO_TICKS(500));
+    led_rgb(0, 255, 0); vTaskDelay(pdMS_TO_TICKS(500));
+    led_rgb(0, 0, 255); vTaskDelay(pdMS_TO_TICKS(500));
+    led_rgb(0, 0, 0);   vTaskDelay(pdMS_TO_TICKS(500));
+    return true;
+}
+#endif
+
+/** 센서 데이터 정상 수신 보고 (읽기 태스크에서 호출). */
+static inline void led_report_data_ok(void)
+{
+    s_last_data_tick = xTaskGetTickCount();
+    s_sensor_err_streak = 0;
+}
+/** 센서 읽기 오류 보고. */
+static inline void led_report_data_error(void) { s_sensor_err_streak++; }
+
+/**
+ * LED 상태 태스크 — 20ms 마다 표시를 갱신하고, 0.5초마다 상태를 판정한다.
+ *   BOOT : 파랑 0.5초 깜빡임            (찾는 중)
+ *   OK   : 초록 숨쉬기(2.5초 주기 페이드) (차분하게 살아 있음)
+ *   FAULT: 노랑 0.25초 빠른 깜빡임       (긴급)
+ * 색을 못 가려도 리듬(숨쉬기 vs 빠른 깜빡임)으로 정상/이상이 구분된다.
+ */
+#define LED_TICK_MS        20
+#define LED_BREATH_MS      2500   // 정상: 숨쉬기 한 주기
+#define LED_BREATH_MIN     12     // 숨쉬기 최저 밝기(0~255) — 완전히 꺼지지 않게
+#define LED_WAIT_BLINK_MS  500    // 대기: 깜빡 반주기
+#define LED_FAULT_BLINK_MS 250    // 이상: 깜빡 반주기
+
+static void led_status_task(void *pv)
+{
+    led_state_t prev = LED_STATE_BOOT;
+    uint32_t prev_packets = 0, prev_errors = 0;
+    TickType_t last_packet_tick = xTaskGetTickCount();
+    uint32_t t_ms = 0;
+
+    while (1) {
+        // ---- 0.5초마다 판정 ----
+        if (t_ms % 500 == 0) {
+            led_state_t st = LED_STATE_BOOT;
+            if (s_led_monitor_started) {
+                TickType_t now = xTaskGetTickCount();
+                bool wifi_ok = wifi_manager_is_connected();
+                bool data_ok, tx_error = false;
+                if (s_streaming_mode) {
+                    sensor_streamer_stats_t s;
+                    sensor_streamer_get_stats(&s);
+                    if (s.packets_sent != prev_packets) last_packet_tick = now;
+                    tx_error = (s.send_errors != prev_errors);
+                    prev_packets = s.packets_sent; prev_errors = s.send_errors;
+                    data_ok = (now - last_packet_tick) < pdMS_TO_TICKS(LED_DATA_STALE_MS);
+                } else {
+                    data_ok = (now - s_last_data_tick) < pdMS_TO_TICKS(LED_DATA_STALE_MS)
+                              && s_sensor_err_streak < 3;
+                }
+                // 감시 시작 직후 유예: 첫 데이터가 도착하기 전에는 데이터 부재를 이상으로 보지 않음
+                if ((now - s_monitor_start_tick) < pdMS_TO_TICKS(LED_DATA_STALE_MS)) data_ok = true;
+                bool fault = s_sensor_init_failed || !wifi_ok || !data_ok || tx_error;
+                st = fault ? LED_STATE_FAULT : LED_STATE_OK;
+                if (st != prev) {
+                    if (st == LED_STATE_OK)
+                        ESP_LOGI(TAG, "LED 상태: 정상(초록 숨쉬기) — WiFi 연결 + 진동 데이터 정상");
+                    else
+                        ESP_LOGW(TAG, "LED 상태: 이상(노랑 빠른 깜빡임) — 센서초기화실패=%d WiFi=%d 데이터=%d 전송오류=%d",
+                                 s_sensor_init_failed, wifi_ok, data_ok, tx_error);
+                }
+            }
+            if (st != prev) { prev = st; t_ms = 0; }
+            s_led_state = st;
+        }
+
+        // ---- 20ms 마다 렌더 ----
+        switch (s_led_state) {
+        case LED_STATE_OK: {
+            // 코사인 숨쉬기 + 감마(제곱)로 눈에 자연스럽게
+            float ph = (float)(t_ms % LED_BREATH_MS) / LED_BREATH_MS;
+            float v  = 0.5f - 0.5f * cosf(2.0f * 3.14159265f * ph);   // 0..1
+            v = v * v;
+            uint8_t g = LED_BREATH_MIN + (uint8_t)(v * (255 - LED_BREATH_MIN));
+            led_rgb(0, g, 0);
+            break;
+        }
+        case LED_STATE_FAULT:
+            if ((t_ms / LED_FAULT_BLINK_MS) & 1) led_rgb(0, 0, 0); else led_rgb(255, 170, 0);
+            break;
+        default:
+            if ((t_ms / LED_WAIT_BLINK_MS) & 1) led_rgb(0, 0, 0); else led_rgb(0, 0, 255);
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(LED_TICK_MS));
+        t_ms += LED_TICK_MS;
+    }
+}
+
+/** 상태 LED 초기화 + 자가진단 + 상태 태스크 시작. 실패해도 앱은 계속. */
+static void led_init(void)
+{
+    if (!led_hw_init()) {
+        ESP_LOGW(TAG, "상태 LED 초기화 실패 — LED 없이 계속 진행");
+        return;
+    }
+    ESP_LOGI(TAG, "LED 상태: 대기(파랑 깜빡임) — 전원 ON, 정상 동작 확인 전");
+    xTaskCreate(led_status_task, "led_status", 3072, NULL, 3, NULL);
+}
+
 // ANSI Color codes for terminal output
 #define COLOR_RESET   "\033[0m"
 #define COLOR_RED     "\033[1;31m"
@@ -42,339 +258,6 @@ static bool iis3dwb_initialized = false;
 #define COLOR_BG_GREEN  "\033[42m"
 #define COLOR_BG_RED    "\033[41m"
 
-#if 1  // GPIO Test Code - Enabled
-// ============================================================================
-// GPIO Test Code (Disabled)
-// ============================================================================
-// GPIO interrupt state tracking
-static volatile uint8_t ex2_isr_state[5] = {0};  // Current state from ISR
-static volatile uint8_t ex4_isr_state[5] = {0};  // Current state from ISR
-static volatile bool ex2_isr_triggered[5] = {false};
-static volatile bool ex4_isr_triggered[5] = {false};
-
-// ============================================================================
-// GPIO Pin Definitions (from pinmap.png)
-// ============================================================================
-
-// EX1 - Output pins (connected to EX2 via LAN cable)
-#define EX1_PIN1    GPIO_NUM_4
-#define EX1_PIN2    GPIO_NUM_11
-#define EX1_PIN3    GPIO_NUM_12
-#define EX1_PIN4    GPIO_NUM_13
-#define EX1_PIN5    GPIO_NUM_14
-
-// EX2 - Input pins (receives from EX1)
-#define EX2_PIN1    GPIO_NUM_6
-#define EX2_PIN2    GPIO_NUM_7
-#define EX2_PIN3    GPIO_NUM_15
-#define EX2_PIN4    GPIO_NUM_17
-#define EX2_PIN5    GPIO_NUM_18
-
-// EX3 - Output pins (connected to EX4 via LAN cable)
-#define EX3_PIN1    GPIO_NUM_45
-#define EX3_PIN2    GPIO_NUM_48
-#define EX3_PIN3    GPIO_NUM_47
-#define EX3_PIN4    GPIO_NUM_9
-#define EX3_PIN5    GPIO_NUM_10
-
-// EX4 - Input pins (receives from EX3)
-#define EX4_PIN1    GPIO_NUM_1
-#define EX4_PIN2    GPIO_NUM_2
-#define EX4_PIN3    GPIO_NUM_42
-#define EX4_PIN4    GPIO_NUM_41
-#define EX4_PIN5    GPIO_NUM_40
-
-// Pin arrays for easier iteration
-static const gpio_num_t ex1_pins[] = {EX1_PIN1, EX1_PIN2, EX1_PIN3, EX1_PIN4, EX1_PIN5};
-static const gpio_num_t ex2_pins[] = {EX2_PIN1, EX2_PIN2, EX2_PIN3, EX2_PIN4, EX2_PIN5};
-static const gpio_num_t ex3_pins[] = {EX3_PIN1, EX3_PIN2, EX3_PIN3, EX3_PIN4, EX3_PIN5};
-static const gpio_num_t ex4_pins[] = {EX4_PIN1, EX4_PIN2, EX4_PIN3, EX4_PIN4, EX4_PIN5};
-
-#define NUM_PINS    5
-
-// ============================================================================
-// GPIO Configuration
-// ============================================================================
-
-/**
- * @brief Configure output GPIOs (EX1, EX3)
- */
-static void configure_output_pins(void)
-{
-    ESP_LOGI(TAG, "Configuring EX1 output pins...");
-    for (int i = 0; i < NUM_PINS; i++) {
-        gpio_reset_pin(ex1_pins[i]);
-        gpio_set_direction(ex1_pins[i], GPIO_MODE_OUTPUT);
-        gpio_set_level(ex1_pins[i], 0);
-        ESP_LOGI(TAG, "  EX1 PIN%d: GPIO%d -> OUTPUT", i + 1, ex1_pins[i]);
-    }
-
-    ESP_LOGI(TAG, "Configuring EX3 output pins...");
-    for (int i = 0; i < NUM_PINS; i++) {
-        gpio_reset_pin(ex3_pins[i]);
-        gpio_set_direction(ex3_pins[i], GPIO_MODE_OUTPUT);
-        gpio_set_level(ex3_pins[i], 0);
-        ESP_LOGI(TAG, "  EX3 PIN%d: GPIO%d -> OUTPUT", i + 1, ex3_pins[i]);
-    }
-}
-
-/**
- * @brief GPIO ISR handler for EX2 pins
- */
-static void IRAM_ATTR ex2_gpio_isr_handler(void *arg)
-{
-    uint32_t pin_index = (uint32_t)arg;
-    if (pin_index < NUM_PINS) {
-        ex2_isr_state[pin_index] = gpio_get_level(ex2_pins[pin_index]);
-        ex2_isr_triggered[pin_index] = true;
-    }
-}
-
-/**
- * @brief GPIO ISR handler for EX4 pins
- */
-static void IRAM_ATTR ex4_gpio_isr_handler(void *arg)
-{
-    uint32_t pin_index = (uint32_t)arg;
-    if (pin_index < NUM_PINS) {
-        ex4_isr_state[pin_index] = gpio_get_level(ex4_pins[pin_index]);
-        ex4_isr_triggered[pin_index] = true;
-    }
-}
-
-/**
- * @brief Configure input GPIOs (EX2, EX4) with GPIO interrupts
- * As per dev.png specification: "EX2,4의 GPIO핀을 입력으로 설정(GPIO인터럽트를 이용할것)"
- */
-static void configure_input_pins(void)
-{
-    // Install GPIO ISR service
-    esp_err_t ret = gpio_install_isr_service(0);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "Failed to install GPIO ISR service: %s", esp_err_to_name(ret));
-        return;
-    }
-    ESP_LOGI(TAG, "GPIO ISR service installed");
-
-    ESP_LOGI(TAG, "Configuring EX2 input pins with GPIO interrupt...");
-    for (int i = 0; i < NUM_PINS; i++) {
-        gpio_reset_pin(ex2_pins[i]);
-
-        gpio_config_t io_conf = {
-            .pin_bit_mask = (1ULL << ex2_pins[i]),
-            .mode = GPIO_MODE_INPUT,
-            .pull_up_en = GPIO_PULLUP_DISABLE,
-            .pull_down_en = GPIO_PULLDOWN_ENABLE,
-            .intr_type = GPIO_INTR_ANYEDGE,  // Trigger on both rising and falling edge
-        };
-        ret = gpio_config(&io_conf);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "  EX2 PIN%d: GPIO%d config FAILED (%s)",
-                     i + 1, ex2_pins[i], esp_err_to_name(ret));
-            continue;
-        }
-
-        // Add ISR handler for this pin
-        ret = gpio_isr_handler_add(ex2_pins[i], ex2_gpio_isr_handler, (void *)(uint32_t)i);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "  EX2 PIN%d: GPIO%d ISR add FAILED (%s)",
-                     i + 1, ex2_pins[i], esp_err_to_name(ret));
-        } else {
-            // Initialize state
-            ex2_isr_state[i] = gpio_get_level(ex2_pins[i]);
-            ESP_LOGI(TAG, "  EX2 PIN%d: GPIO%d -> INPUT with ISR (initial=%d)",
-                     i + 1, ex2_pins[i], ex2_isr_state[i]);
-        }
-    }
-
-    ESP_LOGI(TAG, "Configuring EX4 input pins with GPIO interrupt...");
-    for (int i = 0; i < NUM_PINS; i++) {
-        gpio_reset_pin(ex4_pins[i]);
-
-        gpio_config_t io_conf = {
-            .pin_bit_mask = (1ULL << ex4_pins[i]),
-            .mode = GPIO_MODE_INPUT,
-            .pull_up_en = GPIO_PULLUP_DISABLE,
-            .pull_down_en = GPIO_PULLDOWN_ENABLE,
-            .intr_type = GPIO_INTR_ANYEDGE,  // Trigger on both rising and falling edge
-        };
-        ret = gpio_config(&io_conf);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "  EX4 PIN%d: GPIO%d config FAILED (%s)",
-                     i + 1, ex4_pins[i], esp_err_to_name(ret));
-            continue;
-        }
-
-        // Add ISR handler for this pin
-        ret = gpio_isr_handler_add(ex4_pins[i], ex4_gpio_isr_handler, (void *)(uint32_t)i);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "  EX4 PIN%d: GPIO%d ISR add FAILED (%s)",
-                     i + 1, ex4_pins[i], esp_err_to_name(ret));
-        } else {
-            // Initialize state
-            ex4_isr_state[i] = gpio_get_level(ex4_pins[i]);
-            ESP_LOGI(TAG, "  EX4 PIN%d: GPIO%d -> INPUT with ISR (initial=%d)",
-                     i + 1, ex4_pins[i], ex4_isr_state[i]);
-        }
-    }
-}
-
-// ============================================================================
-// Signal Test Functions
-// ============================================================================
-
-/**
- * @brief Set all output pins to specified level
- */
-static void set_all_outputs(int level)
-{
-    // Set EX1 outputs
-    for (int i = 0; i < NUM_PINS; i++) {
-        gpio_set_level(ex1_pins[i], level);
-    }
-    // Set EX3 outputs
-    for (int i = 0; i < NUM_PINS; i++) {
-        gpio_set_level(ex3_pins[i], level);
-    }
-}
-
-/**
- * @brief Clear ISR triggered flags
- */
-static void clear_isr_flags(void)
-{
-    for (int i = 0; i < NUM_PINS; i++) {
-        ex2_isr_triggered[i] = false;
-        ex4_isr_triggered[i] = false;
-    }
-}
-
-/**
- * @brief Test EX1 -> EX2 signal transfer using GPIO interrupt state
- * @param expected_level Expected input level (0 or 1)
- * @return Number of failed pins (0 = all pass)
- */
-static int test_ex1_to_ex2(int expected_level)
-{
-    int failures = 0;
-
-    ESP_LOGI(TAG, "  EX1 -> EX2 (expected: %s)", expected_level ? "HIGH" : "LOW");
-
-    for (int i = 0; i < NUM_PINS; i++) {
-        // Read current level (also updates ISR state)
-        int actual = gpio_get_level(ex2_pins[i]);
-        int isr_val = ex2_isr_state[i];
-        bool triggered = ex2_isr_triggered[i];
-
-        const char *status = (actual == expected_level) ? "PASS" : "FAIL";
-
-        if (actual != expected_level) {
-            failures++;
-            ESP_LOGE(TAG, "    PIN%d: GPIO%d->GPIO%d = %d (ISR:%d,T:%d) [%s]",
-                     i + 1, ex1_pins[i], ex2_pins[i], actual, isr_val, triggered, status);
-        } else {
-            ESP_LOGI(TAG, "    PIN%d: GPIO%d->GPIO%d = %d (ISR:%d,T:%d) [%s]",
-                     i + 1, ex1_pins[i], ex2_pins[i], actual, isr_val, triggered, status);
-        }
-    }
-
-    return failures;
-}
-
-/**
- * @brief Test EX3 -> EX4 signal transfer using GPIO interrupt state
- * @param expected_level Expected input level (0 or 1)
- * @return Number of failed pins (0 = all pass)
- */
-static int test_ex3_to_ex4(int expected_level)
-{
-    int failures = 0;
-
-    ESP_LOGI(TAG, "  EX3 -> EX4 (expected: %s)", expected_level ? "HIGH" : "LOW");
-
-    for (int i = 0; i < NUM_PINS; i++) {
-        // Read current level (also updates ISR state)
-        int actual = gpio_get_level(ex4_pins[i]);
-        int isr_val = ex4_isr_state[i];
-        bool triggered = ex4_isr_triggered[i];
-
-        const char *status = (actual == expected_level) ? "PASS" : "FAIL";
-
-        if (actual != expected_level) {
-            failures++;
-            ESP_LOGE(TAG, "    PIN%d: GPIO%d->GPIO%d = %d (ISR:%d,T:%d) [%s]",
-                     i + 1, ex3_pins[i], ex4_pins[i], actual, isr_val, triggered, status);
-        } else {
-            ESP_LOGI(TAG, "    PIN%d: GPIO%d->GPIO%d = %d (ISR:%d,T:%d) [%s]",
-                     i + 1, ex3_pins[i], ex4_pins[i], actual, isr_val, triggered, status);
-        }
-    }
-
-    return failures;
-}
-
-/**
- * @brief Run complete signal transfer test with GPIO interrupts
- */
-static void signal_test_task(void *pvParameters)
-{
-    uint32_t test_count = 0;
-    uint32_t pass_count = 0;
-    uint32_t fail_count = 0;
-
-    ESP_LOGI(TAG, "Starting GPIO signal transfer test (with ISR)...");
-    ESP_LOGI(TAG, "============================================");
-    ESP_LOGI(TAG, "Test Configuration:");
-    ESP_LOGI(TAG, "  EX1 (OUTPUT) <-> EX2 (INPUT+ISR) via LAN cable");
-    ESP_LOGI(TAG, "  EX3 (OUTPUT) <-> EX4 (INPUT+ISR) via LAN cable");
-    ESP_LOGI(TAG, "  Output format: PIN: OUT->IN = val (ISR:val,T:triggered) [status]");
-    ESP_LOGI(TAG, "============================================");
-
-    while (1) {
-        test_count++;
-        int total_failures = 0;
-
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "===== Test #%lu =====", test_count);
-
-        // ===== Phase 1: Set HIGH and verify =====
-        ESP_LOGI(TAG, "[Phase 1] Setting all outputs HIGH...");
-        clear_isr_flags();  // Clear ISR flags before changing output
-        set_all_outputs(1);
-        vTaskDelay(pdMS_TO_TICKS(50));  // Short delay for signal stabilization and ISR to trigger
-
-        total_failures += test_ex1_to_ex2(1);
-        total_failures += test_ex3_to_ex4(1);
-
-        // Wait 0.5 seconds (as per specification)
-        vTaskDelay(pdMS_TO_TICKS(500));
-
-        // ===== Phase 2: Set LOW and verify =====
-        ESP_LOGI(TAG, "[Phase 2] Setting all outputs LOW...");
-        clear_isr_flags();  // Clear ISR flags before changing output
-        set_all_outputs(0);
-        vTaskDelay(pdMS_TO_TICKS(50));  // Short delay for signal stabilization and ISR to trigger
-
-        total_failures += test_ex1_to_ex2(0);
-        total_failures += test_ex3_to_ex4(0);
-
-        // ===== Test Result =====
-        if (total_failures == 0) {
-            pass_count++;
-            ESP_LOGI(TAG, ">>> Test #%lu: ALL PASS <<<", test_count);
-        } else {
-            fail_count++;
-            ESP_LOGE(TAG, ">>> Test #%lu: FAILED (%d errors) <<<", test_count, total_failures);
-        }
-
-        ESP_LOGI(TAG, "Statistics: Total=%lu, Pass=%lu, Fail=%lu",
-                 test_count, pass_count, fail_count);
-
-        // Wait before next test cycle
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-}
-#endif  // GPIO Test Code - Currently disabled
 
 // ============================================================================
 // IIS3DWB Sensor Functions
@@ -490,12 +373,16 @@ static void iis3dwb_read_task(void *pvParameters)
             ESP_LOGI(TAG_SENSOR, "[%lu] Accel: X=%+8.2f mg, Y=%+8.2f mg, Z=%+8.2f mg | Mag=%.2f mg",
                      sample_count, accel.x_mg, accel.y_mg, accel.z_mg, magnitude);
 
+            // 데이터 정상 수신 → LED 상태 감시 태스크에 보고 (정상이면 초록 상시 점등)
+            led_report_data_ok();
+
             // Alert for high vibration (magnitude > 2000 mg = 2g)
             if (magnitude > 2000.0f) {
                 ESP_LOGW(TAG_SENSOR, "  ⚠ High vibration detected! (%.2f mg)", magnitude);
             }
         } else {
             ESP_LOGE(TAG_SENSOR, "Failed to read acceleration data: %s", esp_err_to_name(ret));
+            led_report_data_error();     // 반복되면 LED 노랑(이상)
         }
 
         // Read temperature periodically (every 10 samples)
@@ -517,15 +404,12 @@ static void iis3dwb_read_task(void *pvParameters)
 /**
  * @brief WiFi 초기화
  *
- * 제품화 구조: WiFi 자격증명을 컴파일 타임 Kconfig가 아니라
- * NVS(ROM)에 저장된 런타임 값에서 가져옵니다.
+ * 제품화 구조: WiFi 자격증명은 NVS(ROM) 저장값을 우선 사용합니다.
  *
- *  - 저장된 설정 있음 → 해당 SSID로 연결 시도 후 대기
- *  - 저장된 설정 없음 → WiFi 스택만 초기화하고 [설정 대기 모드]로 진입
- *    (PC 설정 툴의 scan_wifi/set_wifi 명령을 받을 수 있도록 스택은 살려둠)
+ *  - NVS 저장 설정 있음 → 해당 SSID로 연결 (파이썬 설정 툴 주입값)
+ *  - NVS 저장 설정 없음 → menuconfig 값(CONFIG_WIFI_SSID/PASSWORD)으로 폴백
  *
- * @return ESP_OK 연결 성공, ESP_ERR_NOT_FOUND 저장된 설정 없음(대기 모드),
- *         그 외 연결 실패
+ * @return ESP_OK 연결 성공, 그 외 연결 실패
  */
 static esp_err_t init_wifi(void)
 {
@@ -538,20 +422,43 @@ static esp_err_t init_wifi(void)
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     printf(COLOR_CYAN "  └─────────────────────────────────┘" COLOR_RESET "\n");
 
-    // NVS에서 저장된 WiFi 자격증명 로드 시도
-    config_wifi_cred_t cred;
-    bool has_saved = (config_manager_load_wifi(&cred) == ESP_OK);
+    // ────────────────────────────────────────────────────────────────
+    // WiFi 자격증명 출처는 빌드 옵션(CONFIG_WIFI_PREFER_NVS)으로 결정한다.
+    //
+    //  · 기본(n) — flash/monitor 개발용:
+    //      NVS를 보지 않고 Kconfig 값(CONFIG_WIFI_SSID/PASSWORD)으로 곧바로 연결.
+    //      config-tool의 NVS 주입과 완전 독립 (UV1 스타일).
+    //
+    //  · CONFIG_WIFI_PREFER_NVS=y — 고객 배포용:
+    //      NVS(devcfg)에 저장된 값이 있으면 그것으로, 없으면 Kconfig 값으로 폴백.
+    //      운영: flash(배포툴) → NVS 주입 → 파워 온 시 자동 연결.
+    // ────────────────────────────────────────────────────────────────
+    const char *ssid = CONFIG_WIFI_SSID;
+    const char *password = CONFIG_WIFI_PASSWORD;
 
-    // WiFi 스택 초기화 (저장값 있으면 그 SSID, 없으면 자리표시자)
-    // 설정 없어도 스택은 살려서 설정 툴 명령(scan/set)을 받을 수 있게 함
+#if CONFIG_WIFI_PREFER_NVS
+    config_wifi_cred_t nvs_cred;
+    if (config_manager_has_wifi() &&
+        config_manager_load_wifi(&nvs_cred) == ESP_OK) {
+        ssid = nvs_cred.ssid;
+        password = nvs_cred.password;
+        ESP_LOGI(TAG_WIFI, "WiFi 자격증명 출처: NVS(devcfg) — 설정 툴 주입값");
+    } else {
+        ESP_LOGI(TAG_WIFI, "WiFi 자격증명 출처: Kconfig 기본값 (NVS 미설정)");
+    }
+#else
+    ESP_LOGI(TAG_WIFI, "WiFi 자격증명 출처: Kconfig (개발 빌드 — NVS 무시)");
+#endif
+
     wifi_manager_config_t wifi_config = {
-        .ssid = has_saved ? cred.ssid : "",
-        .password = has_saved ? cred.password : "",
+        .ssid = ssid,
+        .password = password,
         .max_retry = CONFIG_WIFI_MAXIMUM_RETRY,
         .auth_mode_threshold = CONFIG_WIFI_SCAN_AUTH_MODE_THRESHOLD,
-        /* 저장된 설정이 있을 때만 자동 연결. 없으면 대기(스캔만) → 크래시 방지 */
-        .auto_connect = has_saved,
+        .auto_connect = true,
     };
+
+    ESP_LOGI(TAG_WIFI, "Connecting to: %s", ssid);
 
     esp_err_t ret = wifi_manager_init(&wifi_config);
     if (ret != ESP_OK) {
@@ -561,23 +468,11 @@ static esp_err_t init_wifi(void)
         return ret;
     }
 
-    if (!has_saved) {
-        // 저장된 설정 없음 → 설정 대기 모드
-        printf("\n");
-        printf(COLOR_YELLOW "  ⚙ WiFi 설정이 없습니다. 설정 대기 모드로 진입합니다." COLOR_RESET "\n");
-        printf(COLOR_YELLOW "    PC 설정 툴을 USB로 연결하여 WiFi를 설정하세요." COLOR_RESET "\n");
-        printf("\n");
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    // 저장된 설정으로 연결 대기 (30초 타임아웃 — 실패해도 동작 계속)
-    ESP_LOGI(TAG_WIFI, "저장된 설정으로 연결 시도: %s", cred.ssid);
     ret = wifi_manager_wait_for_connection(30000);
     if (ret != ESP_OK) {
         printf("\n");
         printf(COLOR_BG_RED COLOR_WHITE "  ✗ WiFi Connection Failed!  " COLOR_RESET "\n");
-        printf(COLOR_RED "  저장된 WiFi에 연결 실패: %s" COLOR_RESET "\n", cred.ssid);
-        printf(COLOR_YELLOW "  설정 툴로 WiFi를 다시 설정할 수 있습니다." COLOR_RESET "\n");
+        printf(COLOR_RED "  Could not connect to: %s" COLOR_RESET "\n", ssid);
         printf("\n");
         return ret;
     }
@@ -588,7 +483,7 @@ static esp_err_t init_wifi(void)
         printf("\n");
         printf(COLOR_BG_GREEN COLOR_WHITE "  ★ WiFi Connected Successfully!  " COLOR_RESET "\n");
         printf(COLOR_GREEN "  ┌─────────────────────────────────┐" COLOR_RESET "\n");
-        printf(COLOR_GREEN "  │" COLOR_RESET " SSID: " COLOR_CYAN "%-24s" COLOR_RESET COLOR_GREEN " │" COLOR_RESET "\n", cred.ssid);
+        printf(COLOR_GREEN "  │" COLOR_RESET " SSID: " COLOR_CYAN "%-24s" COLOR_RESET COLOR_GREEN " │" COLOR_RESET "\n", ssid);
         printf(COLOR_GREEN "  │" COLOR_RESET " IP  : " COLOR_YELLOW "%-24s" COLOR_RESET COLOR_GREEN " │" COLOR_RESET "\n", ip_str);
         printf(COLOR_GREEN "  │" COLOR_RESET " MAC : " COLOR_MAGENTA "%02X:%02X:%02X:%02X:%02X:%02X" COLOR_RESET "         " COLOR_GREEN "│" COLOR_RESET "\n",
                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -609,6 +504,9 @@ void app_main(void)
     ESP_LOGI(TAG, "IIS3DWB Vibration Sensor Application");
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "");
+
+    // ===== 온보드 RGB LED 초기화 (부팅 직후) =====
+    led_init();
 
     // ===== Config Manager Initialization (NVS) =====
     // WiFi 자격증명 등 영구 설정을 ROM에서 읽기 위해 가장 먼저 초기화
@@ -644,6 +542,7 @@ void app_main(void)
     ret = init_iis3dwb_sensor();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG_SENSOR, "Sensor init failed, continuing without sensor...");
+        s_sensor_init_failed = true;     // → LED 노랑(이상)
     } else {
         ESP_LOGI(TAG, "IIS3DWB sensor initialized successfully!");
     }
@@ -663,14 +562,19 @@ void app_main(void)
     } else if (iis3dwb_initialized && streaming_active) {
         ESP_LOGI(TAG, "Step 3: (스트리밍 모드 — 모니터링 태스크 생략, 센서 경합 방지)");
     } else {
-        ESP_LOGW(TAG, "");
-        ESP_LOGW(TAG, "No sensor available. Starting GPIO test mode...");
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "Step 3: GPIO Signal Transfer Test");
-        configure_output_pins();
-        configure_input_pins();
-        xTaskCreate(signal_test_task, "gpio_test", 4096, NULL, 5, NULL);
+        // 센서 초기화 실패 → 대기(LED 노랑=이상). GPIO 테스트로 빠지지 않고 원인을 알린다.
+        printf("\n");
+        printf(COLOR_BG_RED COLOR_WHITE "  ✗ 센서를 찾을 수 없습니다  " COLOR_RESET "\n");
+        printf(COLOR_RED  "  IIS3DWB WHO_AM_I 응답 없음 — SPI 배선/전원/센서 실장을 확인하세요." COLOR_RESET "\n");
+        printf(COLOR_YELLOW "  이 디바이스는 정상 동작할 수 없습니다. 하드웨어 점검이 필요합니다." COLOR_RESET "\n\n");
+        ESP_LOGE(TAG_SENSOR, "센서 없음 — 진동 측정 불가 (LED 노랑으로 이상 표시)");
     }
+
+    // ===== LED 상태 감시 시작 (여기부터 파랑→초록/노랑으로 판정) =====
+    s_streaming_mode = streaming_active;
+    s_last_data_tick = xTaskGetTickCount();      // 판정 유예(첫 데이터 대기)
+    s_monitor_start_tick = s_last_data_tick;
+    s_led_monitor_started = true;
 
     // ===== Step 4: WiFi 센서 데이터 스트리밍 =====
     // 조건: 센서 정상 + WiFi 연결됨 + 스트리밍 설정(서버 IP) 존재

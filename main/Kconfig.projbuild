@@ -25,6 +25,60 @@ menu "WiFi Configuration"
             WiFi Authentication Mode threshold (0=OPEN, 1=WEP, 2=WPA_PSK, 3=WPA2_PSK, 4=WPA_WPA2_PSK).
             Use 0 (OPEN) to accept any authentication mode from the AP.
 
+    config WIFI_PREFER_NVS
+        bool "Prefer NVS WiFi credentials over Kconfig (for config-tool deployment)"
+        default n
+        help
+            When enabled, WiFi credentials saved in NVS (namespace "devcfg",
+            injected by config-tool / sensor-setup-py) take priority. If NVS
+            has no saved credentials, the build-time CONFIG_WIFI_SSID/PASSWORD
+            values are used as a fallback.
+
+            - n (default): flash/monitor development build — always use Kconfig
+              values (independent of NVS; config-tool has no effect).
+            - y: customer deployment build — NVS first, Kconfig fallback, so the
+              provisioning tool can set WiFi per-device without rebuilding.
+
+endmenu
+
+menu "Status LED Configuration"
+
+    config STATUS_LED_WS2812
+        bool "Status LED is a WS2812 addressable RGB LED (DevKit style)"
+        default n
+        help
+            n (default): discrete 3-pin RGB LED on GPIOs (customer sensor module,
+                         same pinout as UV1: R=8, G=3, B=46).
+            y          : WS2812 RGB LED driven via led_strip (ESP32-S3-DevKitC, GPIO48).
+
+    config STATUS_LED_GPIO
+        int "WS2812 data GPIO"
+        depends on STATUS_LED_WS2812
+        default 48
+
+    config STATUS_LED_RED_GPIO
+        int "RGB LED red GPIO"
+        depends on !STATUS_LED_WS2812
+        default 8
+
+    config STATUS_LED_GREEN_GPIO
+        int "RGB LED green GPIO"
+        depends on !STATUS_LED_WS2812
+        default 3
+
+    config STATUS_LED_BLUE_GPIO
+        int "RGB LED blue GPIO"
+        depends on !STATUS_LED_WS2812
+        default 46
+
+    config STATUS_LED_ACTIVE_LOW
+        bool "RGB LED turns ON when GPIO is LOW (common anode)"
+        depends on !STATUS_LED_WS2812
+        default y
+        help
+            Customer module measured: GPIO8 LOW -> red ON. GPIO46 defaults LOW at
+            reset (strapping pull-down), which is why blue is on right after power-up.
+
 endmenu
 
 menu "IIS3DWB Vibration Sensor Configuration"

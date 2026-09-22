@@ -1,0 +1,6 @@
+## IDF 관리형 컴포넌트 의존성
+## led_strip: 온보드 WS2812 RGB LED(addressable) 제어용
+dependencies:
+  espressif/led_strip: "^2.5.5"
+  idf:
+    version: ">=5.0"
