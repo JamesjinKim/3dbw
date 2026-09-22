@@ -21,6 +21,7 @@ static const char *TAG = "CONFIG_MGR";
 #define NVS_KEY_RATE     "stream_rate"
 #define NVS_KEY_TRANSP   "transport"
 #define NVS_KEY_READMODE "read_mode"
+#define NVS_KEY_FULLSCALE "full_scale_g"
 
 esp_err_t config_manager_init(void)
 {
@@ -163,6 +164,7 @@ esp_err_t config_manager_save_stream(const config_stream_t *cfg)
     if (ret == ESP_OK) ret = nvs_set_u8(h, NVS_KEY_RATE, cfg->rate_step);
     if (ret == ESP_OK) ret = nvs_set_u8(h, NVS_KEY_TRANSP, cfg->transport);
     if (ret == ESP_OK) ret = nvs_set_u8(h, NVS_KEY_READMODE, cfg->read_mode);
+    if (ret == ESP_OK) ret = nvs_set_u8(h, NVS_KEY_FULLSCALE, cfg->full_scale_g);
     if (ret == ESP_OK) ret = nvs_commit(h);
     nvs_close(h);
 
@@ -207,10 +209,16 @@ esp_err_t config_manager_load_stream(config_stream_t *cfg)
     if (nvs_get_u8(h, NVS_KEY_READMODE, &cfg->read_mode) != ESP_OK) {
         cfg->read_mode = 0;  // 기본 폴링(자동)
     }
+    /* 구형 디바이스 NVS에는 이 키가 없다. 없으면 기존 빌드타임 기본값과
+     * 같은 ±4g로 채워 동작이 바뀌지 않게 한다. 0으로 두면 감도 계산이 깨진다. */
+    if (nvs_get_u8(h, NVS_KEY_FULLSCALE, &cfg->full_scale_g) != ESP_OK) {
+        cfg->full_scale_g = 4;
+    }
     nvs_close(h);
 
-    ESP_LOGI(TAG, "스트리밍 설정 로드 (서버 %s:%u, rate=%u)",
-             cfg->server_ip, cfg->server_port, cfg->rate_step);
+    ESP_LOGI(TAG, "스트리밍 설정 로드 (서버 %s:%u, rate=%u, transport=%u, fs=±%ug)",
+             cfg->server_ip, cfg->server_port, cfg->rate_step,
+             cfg->transport, cfg->full_scale_g);
     return ESP_OK;
 }
 

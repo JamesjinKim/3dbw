@@ -79,8 +79,9 @@ typedef struct {
     char     server_ip[CONFIG_MGR_IP_MAX_LEN + 1]; /**< 라즈베리파이 IP */
     uint16_t server_port;                          /**< 수신 포트 (예: 9000) */
     uint8_t  rate_step;                            /**< 샘플레이트 단계 0~4 */
-    uint8_t  transport;                            /**< 0=UDP, 1=TCP */
+    uint8_t  transport;                            /**< 0=UDP, 1=TCP, 2=USB시리얼 */
     uint8_t  read_mode;                            /**< 0=폴링(자동), 1=인터럽트 */
+    uint8_t  full_scale_g;                         /**< 측정 범위 2/4/8/16 (g) */
 } config_stream_t;
 
 /**
