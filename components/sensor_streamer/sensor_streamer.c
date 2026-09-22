@@ -179,6 +179,14 @@ static void sensor_task_fifo(void *arg)
     ESP_LOGI(TAG, "센서 태스크(FIFO) 시작 (26.6kHz, 데시메이션 1/%u)", decim);
 
     if (iis3dwb_fifo_enable(s.cfg.sensor, IIS3DWB_BDR_26667) != ESP_OK) {
+        /* 시리얼 모드라면 start() 에서 이미 로그를 꺼 둔 상태다. 그대로 두면
+         * 이 에러가 보이지 않고, 패킷도 나가지 않으며, running=false 때문에
+         * sensor_streamer_stop() 도 앞에서 되돌아가 정리조차 못 한다.
+         * → 링버퍼 실패 경로와 같은 방식으로 로그부터 되살린다. */
+        if (s.log_silenced) {
+            esp_log_level_set("*", s.saved_log);   /* 로그 복원 — 실패 원인 진단 */
+            s.log_silenced = false;
+        }
         ESP_LOGE(TAG, "FIFO 활성화 실패");
         s.running = false;
         vTaskDelete(NULL);
