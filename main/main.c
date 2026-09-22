@@ -629,14 +629,11 @@ void app_main(void)
                       (serial_mode || wifi_manager_is_connected());
 
     if (can_stream) {
-        if (serial_mode) {
-            /* 스트리밍이 시작되면 USB 포트가 데이터로 가득 차고 로그도 꺼져
-             * Config Tool이 접근할 수 없다. 이 3초가 설정을 되돌릴 유일한 창이다.
-             * 절대 제거하지 말 것. */
-            ESP_LOGI(TAG, "USB 직결 모드 — 3초 후 스트리밍을 시작합니다.");
-            ESP_LOGI(TAG, "설정을 바꾸려면 지금 Config Tool을 연결하세요.");
-            vTaskDelay(pdMS_TO_TICKS(3000));
-        }
+        /* 시리얼(USB 직결) 모드의 설정 복구는 PC 설정 툴이 esptool 경로로
+         * 수행한다(NVS 바이너리를 직접 플래시). 이때 칩은 ROM 부트로더로
+         * 진입하므로 앱이 무엇을 하고 있든 무관하며, 부팅 직후의 대기 창도
+         * 필요 없다. 시리얼 프로토콜 명령에는 스트리밍 설정을 바꾸는 것이
+         * 없으므로 여기서 시간을 벌어봐야 되돌릴 수 있는 것도 없다. */
 
         ESP_LOGI(TAG, "");
         ESP_LOGI(TAG, "Step 4: 센서 데이터 스트리밍 시작");
