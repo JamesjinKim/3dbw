@@ -277,10 +277,25 @@ static const char* get_fullscale_string(iis3dwb_fs_xl_t fs)
     }
 }
 
+/* 사람이 읽는 g 값(2/4/8/16) → IIS3DWB 레지스터 코드값.
+ * 코드값은 순서가 직관과 어긋나므로(±16g가 0x04) 변환은 이 한 곳에만 둔다. */
+static iis3dwb_fs_xl_t fs_g_to_code(uint8_t g)
+{
+    switch (g) {
+        case 2:  return IIS3DWB_FS_2G;
+        case 4:  return IIS3DWB_FS_4G;
+        case 8:  return IIS3DWB_FS_8G;
+        case 16: return IIS3DWB_FS_16G;
+        default: return IIS3DWB_FS_4G;   /* 알 수 없는 값은 기본 ±4g */
+    }
+}
+
 /**
  * @brief Initialize IIS3DWB vibration sensor
+ *
+ * @param full_scale_g 측정 범위 (2/4/8/16 g). NVS 설정이 없으면 4를 넘긴다.
  */
-static esp_err_t init_iis3dwb_sensor(void)
+static esp_err_t init_iis3dwb_sensor(uint8_t full_scale_g)
 {
     ESP_LOGI(TAG_SENSOR, "Initializing IIS3DWB vibration sensor...");
 
@@ -291,7 +306,7 @@ static esp_err_t init_iis3dwb_sensor(void)
         .sclk_io_num = CONFIG_IIS3DWB_SPI_SCLK_GPIO,
         .cs_io_num = CONFIG_IIS3DWB_SPI_CS_GPIO,
         .clk_speed_hz = CONFIG_IIS3DWB_SPI_FREQ_HZ,
-        .full_scale = (iis3dwb_fs_xl_t)CONFIG_IIS3DWB_FULL_SCALE,
+        .full_scale = fs_g_to_code(full_scale_g),
         .bandwidth = (iis3dwb_bw_xl_t)CONFIG_IIS3DWB_BANDWIDTH,
     };
 
@@ -522,16 +537,33 @@ void app_main(void)
     ESP_LOGI(TAG, "Step 0.5: Starting Serial Config Protocol");
     serial_protocol_start();
 
+    // ===== 스트리밍 설정 선(先)판독 =====
+    // 전송 방식을 먼저 확인한다. USB 직결이면 WiFi를 아예 띄우지 않아
+    // 부팅이 빨라지고(최대 60초 연결 대기 제거) 소비전력도 준다.
+    config_stream_t scfg = {0};
+    bool has_stream = config_manager_has_stream();
+    if (has_stream) {
+        if (config_manager_load_stream(&scfg) != ESP_OK) {
+            has_stream = false;
+        }
+    }
+    bool serial_mode = (has_stream && scfg.transport == 2);
+
     // ===== WiFi Initialization =====
     // NVS에 저장된 설정으로 연결. 설정 없으면 설정 대기 모드.
-    ESP_LOGI(TAG, "Step 1: WiFi Initialization");
-    ret = init_wifi();
-    if (ret == ESP_ERR_NOT_FOUND) {
-        ESP_LOGW(TAG_WIFI, "WiFi 미설정 — 설정 툴 대기 중 (센서 기능은 계속 동작)");
-    } else if (ret != ESP_OK) {
-        ESP_LOGW(TAG_WIFI, "WiFi 연결 실패 — WiFi 없이 계속 진행");
+    // 시리얼(USB 직결) 모드에서는 WiFi가 전혀 필요 없으므로 통째로 건너뛴다.
+    if (!serial_mode) {
+        ESP_LOGI(TAG, "Step 1: WiFi Initialization");
+        ret = init_wifi();
+        if (ret == ESP_ERR_NOT_FOUND) {
+            ESP_LOGW(TAG_WIFI, "WiFi 미설정 — 설정 툴 대기 중 (센서 기능은 계속 동작)");
+        } else if (ret != ESP_OK) {
+            ESP_LOGW(TAG_WIFI, "WiFi 연결 실패 — WiFi 없이 계속 진행");
+        } else {
+            ESP_LOGI(TAG, "WiFi connected successfully!");
+        }
     } else {
-        ESP_LOGI(TAG, "WiFi connected successfully!");
+        ESP_LOGI(TAG, "Step 1: (USB 직결 모드 — WiFi 초기화 생략)");
     }
 
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -539,7 +571,8 @@ void app_main(void)
     // ===== IIS3DWB Sensor Initialization =====
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "Step 2: IIS3DWB Sensor Initialization");
-    ret = init_iis3dwb_sensor();
+    // NVS 설정이 있으면 저장된 측정 범위를, 없으면 기본 ±4g 를 적용한다.
+    ret = init_iis3dwb_sensor(has_stream ? scfg.full_scale_g : 4);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG_SENSOR, "Sensor init failed, continuing without sensor...");
         s_sensor_init_failed = true;     // → LED 노랑(이상)
@@ -550,8 +583,9 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(500));
 
     // 스트리밍 활성 여부 미리 판단 (스트리밍이면 모니터링 태스크와 센서 경합 방지)
-    bool streaming_active = (iis3dwb_initialized && wifi_manager_is_connected()
-                             && config_manager_has_stream());
+    // 시리얼 모드는 WiFi 연결이 필요 없다.
+    bool streaming_active = (iis3dwb_initialized && has_stream
+                             && (serial_mode || wifi_manager_is_connected()));
 
     // ===== Start IIS3DWB Sensor Reading Task =====
     if (iis3dwb_initialized && !streaming_active) {
@@ -576,32 +610,48 @@ void app_main(void)
     s_monitor_start_tick = s_last_data_tick;
     s_led_monitor_started = true;
 
-    // ===== Step 4: WiFi 센서 데이터 스트리밍 =====
-    // 조건: 센서 정상 + WiFi 연결됨 + 스트리밍 설정(서버 IP) 존재
-    if (iis3dwb_initialized && wifi_manager_is_connected() && config_manager_has_stream()) {
-        config_stream_t scfg;
-        if (config_manager_load_stream(&scfg) == ESP_OK) {
-            ESP_LOGI(TAG, "");
-            ESP_LOGI(TAG, "Step 4: WiFi 센서 데이터 스트리밍 시작");
-            sensor_streamer_config_t st = {
-                .sensor = &iis3dwb_handle,
-                .server_ip = scfg.server_ip,
-                .server_port = scfg.server_port,
-                .rate_step = scfg.rate_step,
-                .transport = (stream_transport_type_t)scfg.transport,
-                .read_mode = scfg.read_mode,
-            };
-            esp_err_t sret = sensor_streamer_start(&st);
-            if (sret == ESP_OK) {
+    // ===== Step 4: 센서 데이터 스트리밍 =====
+    // 조건: 센서 정상 + 스트리밍 설정 존재 + (시리얼 모드이거나 WiFi 연결됨)
+    // 시리얼 모드는 WiFi 연결이 필요 없다.
+    bool can_stream = iis3dwb_initialized && has_stream &&
+                      (serial_mode || wifi_manager_is_connected());
+
+    if (can_stream) {
+        if (serial_mode) {
+            /* 스트리밍이 시작되면 USB 포트가 데이터로 가득 차고 로그도 꺼져
+             * Config Tool이 접근할 수 없다. 이 3초가 설정을 되돌릴 유일한 창이다.
+             * 절대 제거하지 말 것. */
+            ESP_LOGI(TAG, "USB 직결 모드 — 3초 후 스트리밍을 시작합니다.");
+            ESP_LOGI(TAG, "설정을 바꾸려면 지금 Config Tool을 연결하세요.");
+            vTaskDelay(pdMS_TO_TICKS(3000));
+        }
+
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "Step 4: 센서 데이터 스트리밍 시작");
+        sensor_streamer_config_t st = {
+            .sensor       = &iis3dwb_handle,
+            .server_ip    = scfg.server_ip,
+            .server_port  = scfg.server_port,
+            .rate_step    = scfg.rate_step,
+            .transport    = (stream_transport_type_t)scfg.transport,
+            .read_mode    = scfg.read_mode,
+            .full_scale_g = scfg.full_scale_g,
+        };
+        esp_err_t sret = sensor_streamer_start(&st);
+        if (sret == ESP_OK) {
+            /* 시리얼 모드에서는 printf 출력이 USB 패킷 스트림에 그대로 섞여
+             * 앞쪽 패킷을 깨뜨린다(로그 레벨 NONE 은 printf 를 막지 못함).
+             * 따라서 이 안내 배너는 WiFi 모드에서만 출력한다. */
+            if (!serial_mode) {
                 printf("\n");
                 printf(COLOR_BG_GREEN COLOR_WHITE "  📡 센서 데이터 스트리밍 중!  " COLOR_RESET "\n");
                 printf(COLOR_GREEN "  → %s:%u (%lu Hz)" COLOR_RESET "\n",
                        scfg.server_ip, scfg.server_port,
                        sensor_streamer_rate_hz(scfg.rate_step));
                 printf("\n");
-            } else {
-                ESP_LOGE(TAG, "스트리밍 시작 실패: %s", esp_err_to_name(sret));
             }
+        } else {
+            ESP_LOGE(TAG, "스트리밍 시작 실패: %s", esp_err_to_name(sret));
         }
     } else {
         ESP_LOGI(TAG, "스트리밍 비활성 (센서/WiFi/서버설정 중 하나 미충족)");
