@@ -62,6 +62,10 @@ static volatile uint32_t s_sensor_err_streak = 0;
 static volatile bool     s_led_monitor_started = false;   // true 가 되면 OK/FAULT 판정 시작
 static volatile TickType_t s_monitor_start_tick = 0;      // 감시 시작 시각 (데이터 유예 계산용)
 static bool              s_streaming_mode = false;
+// USB 직결(시리얼) 모드에서는 WiFi를 의도적으로 띄우지 않는다. 이때 WiFi 미연결을
+// "이상"으로 판정하면 정상 스트리밍 중에도 LED가 계속 노랑이 되어 고장으로 오인된다.
+// 이 플래그가 true 면 건강 판정에서 WiFi 항목을 아예 제외한다.
+static bool              s_serial_mode = false;
 
 #if CONFIG_STATUS_LED_WS2812
 // ---------------- WS2812 (DevKit) ----------------
@@ -198,11 +202,18 @@ static void led_status_task(void *pv)
                 }
                 // 감시 시작 직후 유예: 첫 데이터가 도착하기 전에는 데이터 부재를 이상으로 보지 않음
                 if ((now - s_monitor_start_tick) < pdMS_TO_TICKS(LED_DATA_STALE_MS)) data_ok = true;
-                bool fault = s_sensor_init_failed || !wifi_ok || !data_ok || tx_error;
+                // 시리얼 모드는 WiFi를 쓰지 않으므로 WiFi 항목을 판정에서 제외한다.
+                bool wifi_fault = (!s_serial_mode && !wifi_ok);
+                bool fault = s_sensor_init_failed || wifi_fault || !data_ok || tx_error;
                 st = fault ? LED_STATE_FAULT : LED_STATE_OK;
                 if (st != prev) {
                     if (st == LED_STATE_OK)
-                        ESP_LOGI(TAG, "LED 상태: 정상(초록 숨쉬기) — WiFi 연결 + 진동 데이터 정상");
+                        ESP_LOGI(TAG, "LED 상태: 정상(초록 숨쉬기) — %s진동 데이터 정상",
+                                 s_serial_mode ? "USB 직결 + " : "WiFi 연결 + ");
+                    else if (s_serial_mode)
+                        // WiFi는 원인이 될 수 없으므로 아예 표시하지 않는다 (오진 방지).
+                        ESP_LOGW(TAG, "LED 상태: 이상(노랑 빠른 깜빡임) — 센서초기화실패=%d 데이터=%d 전송오류=%d (USB 직결 — WiFi 무관)",
+                                 s_sensor_init_failed, data_ok, tx_error);
                     else
                         ESP_LOGW(TAG, "LED 상태: 이상(노랑 빠른 깜빡임) — 센서초기화실패=%d WiFi=%d 데이터=%d 전송오류=%d",
                                  s_sensor_init_failed, wifi_ok, data_ok, tx_error);
@@ -606,6 +617,7 @@ void app_main(void)
 
     // ===== LED 상태 감시 시작 (여기부터 파랑→초록/노랑으로 판정) =====
     s_streaming_mode = streaming_active;
+    s_serial_mode = serial_mode;                 // WiFi 미연결을 이상으로 보지 않게
     s_last_data_tick = xTaskGetTickCount();      // 판정 유예(첫 데이터 대기)
     s_monitor_start_tick = s_last_data_tick;
     s_led_monitor_started = true;
