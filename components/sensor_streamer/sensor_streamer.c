@@ -294,11 +294,16 @@ static void sensor_task_fifo(void *arg)
 
 /* 조립된 패킷을 설정된 전송 수단으로 내보낸다.
  * 패킷 포맷은 전송 수단과 무관하게 동일하므로, 여기서만 갈라진다.
- * 반환: 전송 바이트 수(>=0) 또는 실패(<0) */
+ * 반환: 전량 전송 시 전송 바이트 수(>=0), 실패 시 음수.
+ * (호출부 tx_task 는 `sent >= 0` 으로 성공을 판정하므로,
+ *  전송 수단별 반환 규약 차이는 이 함수 안에서 흡수한다.) */
 static int tx_send(const uint8_t *packet, size_t len)
 {
     if (s.cfg.transport == STREAM_TRANSPORT_SERIAL) {
-        return usb_serial_jtag_write_bytes(packet, len, pdMS_TO_TICKS(100));
+        /* write_bytes는 실패 시 음수가 아니라 0을 반환한다(드라이버 소스 확인).
+         * 전량 전송된 경우만 성공으로 보고, 그 외는 -1로 실패 집계한다. */
+        int w = usb_serial_jtag_write_bytes(packet, len, pdMS_TO_TICKS(100));
+        return (w == (int)len) ? w : -1;
     }
 
     /* UDP: ENOMEM(lwip TX 버퍼 일시 부족) 시 양보하며 재시도.
