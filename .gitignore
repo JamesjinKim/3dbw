@@ -1,36 +1,38 @@
 # ===== ESP-IDF 빌드 산출물 (재생성 가능) =====
-build/
+# build/ build-deploy/ build-diag/ boardcheck/build/ 를 모두 잡는다.
+# 한 벌이 약 140 MB 라 실수로 커밋되면 저장소가 못 쓰게 된다.
+build*/
 managed_components/
 dependencies.lock
 
 # ===== 자동 생성 설정 (실제 WiFi 정보 포함될 수 있음) =====
-# sdkconfig.defaults 만 추적, 나머지 sdkconfig* 는 제외
+# sdkconfig.defaults* 만 추적, 나머지 sdkconfig* 는 제외
 sdkconfig
 sdkconfig.old
 sdkconfig.backup_console
 sdkconfig.ci
 
-# ===== 별도 저장소 (config-tool은 자체 repo) =====
-config-tool/
+# ===== 패키징 산출물 (tools/ 스크립트가 재생성) =====
+# boardcheck/dist/ 는 예외 — ESP-IDF 없이 굽기 위해 커밋한다 (아래 부정 규칙)
+/dist/
+!boardcheck/dist/
 
 # ===== 민감 정보 (실제 WiFi 자격증명) =====
 nvs_wifi.bin
 nvs_wifi.csv
 *.nvs.bin
 
+# ===== 수집 데이터 (용량이 크고 현장마다 다르다) =====
+vibdata/
+rpi-collector/results/
+*.csv
+!**/tests_ref_*.csv
+
 # ===== OS / 에디터 =====
 .DS_Store
 *.swp
 *~
 
-# ===== Python 캐시 (rpi-receiver) =====
+# ===== Python 캐시 =====
 __pycache__/
 *.pyc
-rpi-receiver/*.csv
-
-# bkit/IDE 자동 생성 상태 파일
-docs/.pdca-status.json
-.bkit-memory.json
-
-# 배포용 빌드 산출물 (재생성 가능)
-build_deploy/
