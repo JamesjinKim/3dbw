@@ -1,341 +1,136 @@
-# ESP32-S3 GPIO 신호 전송 테스트 프로젝트
+# IIS3DWB 진동센서 시스템
 
-ESP32-S3 기반으로 4개의 커넥터(EX1~EX4) 간 GPIO 신호 전송을 테스트하는 프로젝트입니다. 랜케이블을 통해 EX1→EX2, EX3→EX4 간 신호 전송을 검증합니다.
+ESP32-S3 + IIS3DWB 초광대역 진동센서로 최대 **26.6 kHz** 진동을 수집하는 시스템입니다.
+센서는 USB 직결(시리얼) 또는 WiFi(UDP)로 라즈베리파이에 데이터를 보냅니다.
 
-## 지원 타겟
+이 저장소는 **라즈베리파이 4 (Raspberry Pi OS, arm64)** 에서 개발·운영합니다.
 
-| ESP32-S3 |
-| -------- |
+---
 
-권장: ESP32-S3-WROOM-1 모듈 기반 개발 보드
+## 하는 일은 셋입니다
 
-## 주요 기능
-
-- **GPIO 출력/입력 테스트**: EX1,EX3는 출력, EX2,EX4는 입력 (인터럽트 사용)
-- **신호 전송 검증**: HIGH/LOW 신호 전송 및 수신 확인
-- **WiFi 연결**: 2.4GHz WiFi 연결 및 상태 모니터링
-- **색상 표시**: MAC 주소, IP 주소, WiFi 상태를 터미널에 색상으로 강조
-- **FreeRTOS 기반**: 비동기 GPIO 테스트 태스크
-- **상세 로깅**: PASS/FAIL 상태, ISR 트리거 여부 출력
-
-## 하드웨어 요구사항
-
-### 부품
-- ESP32-S3 개발 보드 (ESP32-S3-WROOM-1 권장)
-- 랜케이블 2개 (EX1↔EX2, EX3↔EX4 연결용)
-- 커넥터 보드 (EX1~EX4)
-
-### GPIO 핀 연결
-
-**EX1 (출력) → EX2 (입력) - 랜케이블로 연결:**
 ```
-EX1 (OUTPUT)      EX2 (INPUT)
-------------      -----------
-GPIO4   -------   GPIO6    (PIN1)
-GPIO11  -------   GPIO7    (PIN2)
-GPIO12  -------   GPIO15   (PIN3)
-GPIO13  -------   GPIO17   (PIN4)
-GPIO14  -------   GPIO18   (PIN5)
+[준비 공정 RPi]                                   [현장 RPi]
+ ① boardcheck      보드 진단 (PASS/FAIL)
+ ② sensor-setup-py 펌웨어 굽기 + 설정 주입
+          │                                        ③ rpi-collector
+          └──── 설정 끝난 센서를 현장으로 ───────────→    데이터 수집
 ```
 
-**EX3 (출력) → EX4 (입력) - 랜케이블로 연결:**
-```
-EX3 (OUTPUT)      EX4 (INPUT)
-------------      -----------
-GPIO45  -------   GPIO1    (PIN1)
-GPIO48  -------   GPIO2    (PIN2)
-GPIO47  -------   GPIO42   (PIN3)
-GPIO9   -------   GPIO41   (PIN4)
-GPIO10  -------   GPIO40   (PIN5)
-```
+### ① 보드 진단 — `boardcheck/`
 
-**참고**: 입력 핀(EX2, EX4)에는 내부 풀다운 저항이 활성화되어 있습니다.
-
-## 사용 방법
-
-### 1. 환경 설정
-
-#### 라즈베리파이 5에서 ESP-IDF 설치
-
-**VSCode Extension 사용 (권장):**
-1. VSCode에서 ESP-IDF Extension 설치
-2. F1 → `ESP-IDF: Configure ESP-IDF Extension` 실행
-3. Express 모드 선택
-4. ESP-IDF 버전: v5.4.3 선택
-5. 설치 경로: `/home/사용자이름/esp/v5.4.3/esp-idf`
-
-**수동 설치:**
-```bash
-# 필요한 패키지 설치
-sudo apt-get update
-sudo apt-get install git wget flex bison gperf python3 python3-pip \
-    python3-venv cmake ninja-build ccache libffi-dev libssl-dev \
-    dfu-util libusb-1.0-0
-
-# ESP-IDF 클론
-mkdir -p ~/esp
-cd ~/esp
-git clone --recursive https://github.com/espressif/esp-idf.git
-cd esp-idf
-./install.sh esp32s3
-
-# 환경 변수 설정 (매번 새 터미널마다 실행 필요)
-. ./export.sh
-```
-
-**타겟 설정:**
-```bash
-# ESP32-S3 사용 (권장)
-idf.py set-target esp32s3
-
-# 또는 ESP32 사용 시
-# idf.py set-target esp32
-```
-
-### 2. 프로젝트 설정
-
-센서 파라미터를 변경하려면 menuconfig를 사용하세요:
+새 보드를 받았거나 하드웨어를 바꿨을 때, **소프트웨어 작업에 들어가기 전에** 먼저 돌립니다.
 
 ```bash
-idf.py menuconfig
+cd boardcheck
+./run.sh              # 꽂고 한 줄. 20초 안에 6개 항목 판정
+./run.sh --loop       # 보드를 갈아 끼우며 연속 검사
 ```
 
-`TSL2591 Configuration` 메뉴에서 설정 가능:
-- **I2C Port Number**: I²C 포트 (0 또는 1, 기본값: 1)
-- **I2C SDA GPIO Number**: SDA 핀 번호 (기본값: 4)
-- **I2C SCL GPIO Number**: SCL 핀 번호 (기본값: 11)
-- **I2C Clock Frequency**: 클럭 속도 (기본값: 100000 Hz)
-- **Integration Time**: 적분 시간 (100~600ms, 기본값: 100ms)
-- **Gain Setting**: 게인 (LOW/MED/HIGH/MAX, 기본값: MED)
-- **Sensor Read Interval**: 읽기 주기 (기본값: 1000ms)
+MCU · SPI · 가속도 출력 · FIFO/ODR · **INT1 전기상태** · INT 발생률을 검사하고
+PASS/FAIL 과 조치 안내를 냅니다. 종료코드 `0`=PASS `1`=WARN `2`=FAIL `3`=실행오류.
 
-### 3. 빌드 및 플래시
+ESP-IDF 없이 돌아갑니다 (`dist/` 에 구울 펌웨어가 들어 있습니다).
+핀맵을 바꿨다면 `./build.sh` 로 다시 빌드하세요.
 
-#### 라즈베리파이 5에서 빌드
+### ② 펌웨어 굽기 + 설정 — `sensor-setup-py/`
 
 ```bash
-# ESP-IDF 환경 활성화 처음 시작 시
-source ~/esp/v5.4.3/esp-idf/export.sh
-
-# 빌드
-idf.py build
-
-# ESP32-S3 연결 확인
-ls -l /dev/ttyACM*
-# 일반적으로 /dev/ttyACM0으로 표시됨
-
-# 플래시
-idf.py -p /dev/ttyACM0 flash
-
-# 플래시 및 시리얼 모니터 (한 번에)
-idf.py -p /dev/ttyACM0 flash monitor
+python3 sensor-setup-py/set_sensor_gui.py
 ```
 
-**VSCode에서 빌드 (권장):**
-- F1 → `ESP-IDF: Build your project`
-- F1 → `ESP-IDF: Flash your project`
-- F1 → `ESP-IDF: Monitor your device`
-- 또는 F1 → `ESP-IDF: Build, Flash and start a monitor on your device`
+한 창에서 **① 펌웨어 굽기 → ② 설정 주입**까지 끝납니다.
+WiFi(UDP)와 USB 직결 중 전송 방식을 고르고, 측정 속도·범위·읽기 방식을 정합니다.
+주입 후 부팅 로그에서 **펌웨어가 되울린 설정을 입력값과 대조**해 반영을 확인합니다.
 
-시리얼 모니터 종료: `Ctrl+]`
-
-1) 빌드 (컴파일)
-# source ~/esp/v5.4.3/esp-idf/export.sh
-
-idf.py build
-app + bootloader + partition table 모두 빌드
-결과물은 build/ 폴더에 생성
-첫 빌드: 수 분 / 재빌드: 보통 30초~1분
-2) 플래시 (보드에 굽기)
-
-# idf.py -p /dev/cu.usbmodem1433301 flash
-3) 모니터 (시리얼 로그 보기)
-
-# idf.py -p /dev/cu.usbmodem1433301 monitor
-
-## 예상 출력
-
-### MAC 주소 표시 (WiFi 연결 전)
-```
-  ┌─────────────────────────────────┐
-  │ MAC : 30:ED:A0:21:3D:3C         │  (마젠타 색상)
-  └─────────────────────────────────┘
-```
-
-### WiFi 연결 성공 시
-```
-  ★ WiFi Connected Successfully!      (녹색 배경)
-  ┌─────────────────────────────────┐
-  │ SSID: shinho2.4G                │  (시안 색상)
-  │ IP  : 192.168.0.48              │  (노란색)
-  │ MAC : 30:ED:A0:21:3D:3C         │  (마젠타)
-  └─────────────────────────────────┘
-```
-
-### WiFi 연결 실패 시
-```
-  ✗ WiFi Connection Failed!           (빨간색 배경)
-  Could not connect to: shinho2.4G
-```
-
-### GPIO 테스트 출력
-```
-I (6203) GPIO_TEST: ===== Test #1 =====
-I (6203) GPIO_TEST: [Phase 1] Setting all outputs HIGH...
-I (6253) GPIO_TEST:   EX1 -> EX2 (expected: HIGH)
-I (6253) GPIO_TEST:     PIN1: GPIO4->GPIO6 = 1 (ISR:1,T:1) [PASS]
-I (6253) GPIO_TEST:     PIN2: GPIO11->GPIO7 = 1 (ISR:1,T:1) [PASS]
-I (6263) GPIO_TEST:     PIN3: GPIO12->GPIO15 = 1 (ISR:1,T:1) [PASS]
-I (6263) GPIO_TEST:     PIN4: GPIO13->GPIO17 = 1 (ISR:1,T:1) [PASS]
-I (6273) GPIO_TEST:     PIN5: GPIO14->GPIO18 = 1 (ISR:1,T:1) [PASS]
-I (6273) GPIO_TEST:   EX3 -> EX4 (expected: HIGH)
-I (6283) GPIO_TEST:     PIN1: GPIO45->GPIO1 = 1 (ISR:1,T:1) [PASS]
-I (6283) GPIO_TEST:     PIN2: GPIO48->GPIO2 = 1 (ISR:1,T:1) [PASS]
-I (6293) GPIO_TEST:     PIN3: GPIO47->GPIO42 = 1 (ISR:1,T:1) [PASS]
-I (6293) GPIO_TEST:     PIN4: GPIO9->GPIO41 = 1 (ISR:1,T:1) [PASS]
-I (6303) GPIO_TEST:     PIN5: GPIO10->GPIO40 = 1 (ISR:1,T:1) [PASS]
-I (6803) GPIO_TEST: [Phase 2] Setting all outputs LOW...
-...
-I (7353) GPIO_TEST: >>> Test #1: ALL PASS <<<
-I (7353) GPIO_TEST: Statistics: Total=1, Pass=1, Fail=0
-```
-
-**출력 포맷 설명:**
-- `ISR:val` - GPIO 인터럽트로 감지된 값
-- `T:triggered` - 인터럽트 발생 여부 (1=발생, 0=미발생)
-- `[PASS/FAIL]` - 기대값과 일치 여부
-
-## 트러블슈팅
-
-### 모든 GPIO 테스트 FAIL
-```
-E (XXX) GPIO_TEST:     PIN1: GPIO4->GPIO6 = 0 (ISR:0,T:0) [FAIL]
-```
-
-**해결 방법**:
-- 랜케이블 연결 확인 (EX1↔EX2, EX3↔EX4)
-- 랜케이블 단선 여부 확인
-- 커넥터 접촉 상태 확인
-
-### 특정 핀만 FAIL
-```
-I (XXX) GPIO_TEST:     PIN1: GPIO4->GPIO6 = 1 (ISR:1,T:1) [PASS]
-E (XXX) GPIO_TEST:     PIN5: GPIO14->GPIO18 = 0 (ISR:0,T:0) [FAIL]
-```
-
-**해결 방법**:
-- 해당 라인의 랜케이블 접촉 불량
-- 해당 GPIO 핀의 하드웨어 문제 확인
-- 다른 랜케이블로 교체 테스트
-
-### WiFi 연결 실패 (4-way handshake timeout)
-```
-I (XXX) wifi:state: run -> init (0xfc0)
-E (XXX) WIFI_MGR: Failed to connect to AP after 5 attempts
-```
-
-**에러 코드 의미:**
-- `0xfc0`: 4-way handshake timeout (WPA/WPA2 인증 실패)
-- `0x200`: Auth timeout
-- `0x400`: Assoc timeout
-
-**해결 방법**:
-1. NVS 초기화: `idf.py erase-flash` 후 재플래시
-2. 라우터에서 MAC 주소 차단 여부 확인
-3. 비밀번호 확인 (menuconfig → WiFi Configuration)
-4. 재시도 횟수 증가 (menuconfig → Maximum retry)
-
-## 프로젝트 구조
-
-```
-IIS3DWB/
-├── components/
-│   ├── wifi_manager/         # WiFi 관리 컴포넌트
-│   │   ├── wifi_manager.h    # WiFi API 선언
-│   │   ├── wifi_manager.c    # WiFi 연결, 재연결 로직
-│   │   └── CMakeLists.txt
-│   ├── iis3dwb/              # IIS3DWB 센서 드라이버 (미사용)
-│   └── tsl2591/              # TSL2591 센서 드라이버 (미사용)
-├── main/
-│   ├── main.c                # GPIO 테스트 메인 애플리케이션
-│   ├── Kconfig.projbuild     # WiFi, GPIO 설정 메뉴
-│   └── CMakeLists.txt
-├── flash.sh                  # macOS용 자동 플래시 스크립트
-├── CMakeLists.txt            # 프로젝트 최상위 빌드 설정
-├── sdkconfig.defaults        # 기본 설정
-├── CLAUDE.md                 # 개발자 가이드
-└── README.md                 # 본 문서
-```
-
-## WiFi 연결 설정
-
-### WiFi 타이밍 설정
-
-WiFi 연결 안정성을 위해 다음과 같은 대기 시간이 설정되어 있습니다:
-
-**초기 연결:**
-- WiFi 하드웨어 초기화 후 **3초 대기** 후 첫 연결 시도
-
-**재시도 간격 (점진적 증가):**
-| 재시도 | 대기 시간 |
-|--------|----------|
-| 1회차 | 7초 |
-| 2회차 | 9초 |
-| 3회차 | 11초 |
-| 4회차 | 13초 |
-| 5회차 | 15초 |
-
-**총 연결 타임아웃:** 60초
-
-### WiFi 설정 변경
+배포용 펌웨어 패키지는 이렇게 만듭니다.
 
 ```bash
-idf.py menuconfig
-# → WiFi Configuration
-#   - SSID: WiFi 네트워크 이름
-#   - Password: WiFi 비밀번호
-#   - Maximum retry: 재시도 횟수 (기본값: 5)
+./tools/build-deploy.sh                          # 배포 빌드 (NVS 우선)
+./tools/make-deploy-package.sh --version 1.0.0   # tar.gz + sha256
 ```
 
-## 빌드 문제 해결
+> 개발 중 빠르게 굽고 로그를 보려면 `./run.sh` 를 씁니다.
+> 다만 이것은 **개발 빌드**라 NVS 의 WiFi 설정을 무시합니다 — 출하에는 쓰지 마세요.
 
-### 라즈베리파이에서 빌드 캐시 문제
+### ③ 데이터 수집 — `rpi-collector/`
 
-다른 환경(Windows 등)에서 빌드한 프로젝트를 라즈베리파이로 가져온 경우:
+포토센서가 감지되면 정해진 시간만큼 기록하고 저장합니다.
+**진동센서 1대마다 포토센서 1개**가 짝을 이루며 각 짝은 독립 동작합니다.
 
 ```bash
-# 프로젝트 디렉토리로 이동
-cd ~/shinho/TSL2591
+# 처음 한 번 — USB 구멍마다 고정 장치 이름을 만든다
+python3 rpi-collector/slots.py --auto
+sudo python3 rpi-collector/slots.py --make-udev
 
-# build 디렉토리 삭제
-rm -rf build
-
-# ESP-IDF 환경 활성화
-source ~/esp/v5.4.3/esp-idf/export.sh
-
-# 타겟 재설정
-idf.py set-target esp32s3
-
-# 빌드
-idf.py build
-
-# 플래시
-idf.py -p /dev/ttyACM0 flash monitor
+# 수집
+python3 rpi-collector/collect_cli.py --auto --minutes 5   # 포토센서 대기
+python3 rpi-collector/collect_cli.py --watch              # 기록 없이 상태만
 ```
 
-### USB 권한 문제
+사용법과 **데이터 분석 시 주의사항**은 도움말에 있습니다.
 
 ```bash
-# 사용자를 dialout 그룹에 추가 (이미 되어 있어야 함)
-sudo usermod -a -G dialout $USER
-
-# 로그아웃 후 다시 로그인 필요
+python3 rpi-collector/helpdoc.py     # 브라우저로 열림 (인터넷 불필요)
 ```
 
+---
 
-## 참고 자료
+## 처음 설치
 
-- **ESP32-S3 기술 레퍼런스**: [Espressif Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/)
-- **ESP-IDF GPIO 드라이버**: [GPIO Driver Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/api-reference/peripherals/gpio.html)
-- **ESP-IDF WiFi 드라이버**: [WiFi Driver Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/api-reference/network/esp_wifi.html)
-- **ESP-IDF 프로그래밍 가이드**: [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/)
+```bash
+./setup-rpi.sh        # ESP-IDF v5.4.3 + 의존 패키지 + 포트 권한
+```
+
+수집·설정툴만 쓴다면 ESP-IDF 없이 이것만으로 충분합니다.
+
+```bash
+sudo apt install -y python3-tk python3-serial python3-lgpio esptool
+sudo usermod -aG dialout,plugdev,gpio $USER   # 후 로그아웃·재로그인
+```
+
+---
+
+## 꼭 알아둘 것
+
+**측정 단위는 이미 환산돼 있습니다.** CSV 의 `_mg` 열을 그대로 쓰면 됩니다.
+측정 범위(±2/4/8/16 g)는 패킷 헤더에 실려 오므로 수집기가 자동으로 맞춥니다.
+
+**주파수 분석(FFT)이 목적이라면 26.6 kHz 로 수집하세요.** 낮은 설정은 펌웨어가
+저역통과 필터 없이 샘플을 솎아내는 방식이라, 높은 주파수 성분이 **낮은 주파수 자리로
+접혀 들어옵니다**(에일리어싱). 실측 근거는 도움말 5장에 있습니다.
+RMS·피크 같은 전체 진동량만 본다면 낮은 레이트도 정확합니다.
+
+**센서 구분은 USB 구멍으로 합니다.** 브리지칩에 고유 일련번호가 없어 다른 방법이
+없습니다. `slots.py --make-udev` 로 만든 `/dev/iis3dwb1`, `/dev/iis3dwb2` 는
+재부팅해도 바뀌지 않습니다. 케이블을 다른 구멍에 옮기면 번호가 바뀝니다.
+
+---
+
+## 폴더 구성
+
+| 폴더 | 내용 |
+|---|---|
+| `main/` `components/` | 펌웨어 소스 (ESP-IDF) |
+| `boardcheck/` | ① 보드 진단 — 독립 ESP-IDF 프로젝트 |
+| `sensor-setup-py/` | ② 펌웨어 굽기 + 설정 주입 (tkinter) |
+| `rpi-collector/` | ③ 데이터 수집 (tkinter) + UDP 수신기 |
+| `tools/` | 배포 빌드·패키징·USB 복구 스크립트 |
+| `deploy/` | udev 규칙 |
+| `docs/` | 패킷 규격 · 시리얼 전송 설계 · FIFO 인터럽트 · 데이터시트 |
+
+센서 핀맵은 **`components/iis3dwb/Kconfig` 한 곳**에만 있습니다.
+펌웨어와 `boardcheck` 가 같은 정의를 공유하므로, 하드웨어가 바뀌면 여기만 고칩니다.
+
+---
+
+## 사양
+
+| 항목 | 값 |
+|---|---|
+| 센서 | IIS3DWB 3축, SPI Mode 3 |
+| 출력 속도(ODR) | 26.667 kHz **고정** (낮은 설정은 솎아내기로 구현) |
+| 측정 범위 | ±2 / ±4 / ±8 / ±16 g |
+| 전송 | USB 시리얼 2,000,000 bps · WiFi UDP · 프로토콜 v2 |
+| 실측 처리량 | 26,733 Hz · 유실 0.00% |
+| 타겟 | ESP32-S3 (QFN56, 8MB PSRAM) · ESP-IDF v5.4.3 |

@@ -122,7 +122,7 @@ echo "======================================================"
 if [ $RECEIVER_ONLY -eq 1 ]; then
   cat <<'EOF'
 수신기 실행:
-  cd rpi-receiver
+  cd rpi-collector
   ./run.sh            # WiFi(UDP) 수신
   ./run.sh serial     # USB 직결(시리얼) 수신
 
@@ -138,6 +138,6 @@ else
   ./run.sh         # 포트 자동 감지 후 build+flash+monitor
 
 수신기 실행:
-  cd rpi-receiver && ./run.sh
+  cd rpi-collector && ./run.sh
 EOF
 fi

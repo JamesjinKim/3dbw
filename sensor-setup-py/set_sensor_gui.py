@@ -638,7 +638,7 @@ class SetupApp(tk.Tk):
             self.tr_hint.configure(
                 text="💡 USB 케이블로 연결된 PC가 데이터를 받습니다 (최대 26.6 kHz).\n"
                      "⚠️ 전송 중에는 디바이스 로그가 표시되지 않습니다.\n"
-                     "수신:  rpi-receiver/run.sh serial",
+                     "수신:  rpi-collector/collect_cli.py --auto",
                 fg="#8a5a00")
         else:
             for w in self.wifi_widgets:
@@ -647,7 +647,7 @@ class SetupApp(tk.Tk):
             self.tr_hint.configure(
                 text="센서가 WiFi에 접속해 아래 IP·포트로 데이터를 보냅니다.\n"
                      "2.4GHz 전용 — 5GHz 네트워크에는 접속하지 못합니다.\n"
-                     "수신:  rpi-receiver/run.sh",
+                     "수신:  rpi-collector/udp_receiver.py",
                 fg="#666")
 
     # ------------------------------------------------------------------
@@ -909,8 +909,8 @@ class SetupApp(tk.Tk):
     @staticmethod
     def _receiver_hint(cfg):
         if int(cfg["transport"]) == 2:
-            return "수신: rpi-receiver/run.sh serial"
-        return "수신: rpi-receiver/run.sh  (%s:%s)" % (cfg["srv_ip"], cfg["srv_port"])
+            return "수신: rpi-collector/collect_cli.py --auto"
+        return "수신: rpi-collector/udp_receiver.py  (%s:%s)" % (cfg["srv_ip"], cfg["srv_port"])
 
     # ------------------------------------------------------------------
     # 동작 — 공장 초기화 / 취소 / 로그 저장

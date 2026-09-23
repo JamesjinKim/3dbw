@@ -14,7 +14,6 @@
 #   WiFi 값을 바꾸려면: idf.py menuconfig → WiFi Configuration → SSID/Password.
 #   설정 툴(NVS 주입 방식)은 이 스크립트와 별개로 실행한다.
 #     · 라즈베리파이:  sensor-setup-py/set_sensor_gui.py  (권장 — 파이썬 무설치)
-#     · macOS:         iis_config_tool (Tauri 앱)
 #
 # 포트 자동 감지(중요):
 #   보드 종류나 USB 브리지 칩에 상관없이 연결된 ESP32 포트를 자동으로 찾는다.

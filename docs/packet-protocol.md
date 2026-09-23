@@ -146,7 +146,7 @@ config_save_stream(&cfg); / config_load_stream(&cfg);
 ## 5. 라즈베리파이 수신 프로그램 (제안)
 
 ```
-rpi-receiver/
+rpi-collector/
 ├── udp_receiver.py     # UDP 수신 + 패킷 파싱 + 저장
 └── README.md
 ```

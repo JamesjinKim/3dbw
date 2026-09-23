@@ -36,3 +36,6 @@ rpi-collector/results/
 # ===== Python 캐시 =====
 __pycache__/
 *.pyc
+
+# lgpio 가 작업 디렉토리에 만드는 알림 FIFO
+.lgd-nfy*

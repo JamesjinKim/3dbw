@@ -1,6 +1,6 @@
 {
   "kind": "iis3dwb-boardcheck",
-  "built_at": "2026-09-23T08:29:15+09:00",
+  "built_at": "2026-09-23T14:36:25+09:00",
   "chip": "esp32s3",
   "write_flash_args": [
     "--flash_mode",
@@ -25,7 +25,7 @@
       "offset": "0x10000",
       "file": "iis3dwb_boardcheck.bin",
       "size": 233792,
-      "sha256": "b98720852a09c60a93258b6e7ca6286cf42ac8a442788ef0ee1d184f7d319ef8"
+      "sha256": "cd5b22a2f68541c8c8f7b6ab38a571e45b7e257f3a5d86b0acdb14afc7861d79"
     },
     {
       "offset": "0x8000",
@@ -37,7 +37,7 @@
       "offset": "0x0",
       "file": "bootloader.bin",
       "size": 20928,
-      "sha256": "471e85da012094aabc0d0320391cd36198598bed8c6b7c5a567f28da56358320"
+      "sha256": "d2146c4f5fdf9fb9722258cfe97e8ad5bc8df039549669d277232f3d0dec9cfb"
     }
   ]
 }

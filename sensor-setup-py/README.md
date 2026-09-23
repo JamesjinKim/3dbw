@@ -62,8 +62,8 @@ WiFi 와 USB 직결은 **배타 선택**입니다. USB 직결을 고르면 디�
 
 | 선택 | NVS `transport` | 라즈베리파이 수신 명령 |
 |------|-----------------|----------------------|
-| WiFi (UDP) | `0` | `cd rpi-receiver && ./run.sh` |
-| USB 직결 (시리얼) | `2` | `cd rpi-receiver && ./run.sh serial` |
+| WiFi (UDP) | `0` | `python3 rpi-collector/udp_receiver.py` |
+| USB 직결 (시리얼) | `2` | `python3 rpi-collector/collect_cli.py --auto` |
 
 > USB 직결 모드에서는 WiFi 이름·라즈베리파이 IP 가 쓰이지 않습니다. 비워두면
 > 자리표시 값(`unused` / `0.0.0.0`)이 저장되고, 입력해 두면 그대로 보존되어

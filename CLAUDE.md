@@ -4,24 +4,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트 개요
 
-ESP32-S3 기반 GPIO 신호 전송 테스트 프로젝트입니다. ESP-IDF 프레임워크를 사용하여 개발되었으며, 4개의 커넥터(EX1~EX4) 간 GPIO 신호 전송을 테스트합니다.
+ESP32-S3 + IIS3DWB 초광대역 진동센서로 진동 데이터를 고속 수집해
+**WiFi(UDP) 또는 USB 시리얼 직결**로 라즈베리파이에 스트리밍하는 프로젝트입니다.
+설정(WiFi·서버IP·샘플레이트·풀스케일)은 NVS에 저장되며 별도 GUI 툴로 주입합니다.
 
 **주요 기능:**
-- WiFi 연결 및 상태 모니터링 (색상 강조 표시)
-- GPIO 신호 전송 테스트 (EX1→EX2, EX3→EX4)
-- GPIO 인터럽트를 이용한 입력 감지
-- MAC 주소 및 IP 주소 색상 표시
+- IIS3DWB FIFO 고속 수집 (최대 26.6 kHz) — 폴링/인터럽트 선택
+- 전송 경로 배타 선택: `transport=0` WiFi UDP / `transport=2` USB 시리얼 직결
+- NVS 기반 런타임 설정 (`config_manager`) + 시리얼 명령 프로토콜 (`serial_protocol`)
+- WiFi 연결 및 상태 모니터링 (색상 강조 표시), 공장 초기화
+- 공정 수집기 (`rpi-collector/`) — 포토센서 트리거로 2대 동시 수집, CSV/바이너리 저장
 
-**현재 개발 환경:**
-- **플랫폼:** 라즈베리파이 5 (Raspberry Pi OS, Linux 6.12.47+rpt-rpi-2712, ARM64)
-- **ESP-IDF:** v5.4.3 (경로: `/home/shinho/esp/v5.4.3/esp-idf`)
-- **툴체인:** `/home/shinho/.espressif`
-- **Python:** 3.11.2
-- **CMake:** 3.25.1
-- **빌드 시스템:** Ninja
+**현재 개발 환경 (2026-09-22 확인):**
+- **플랫폼:** 라즈베리파이 4 Model B Rev 1.5 (Raspberry Pi OS, Linux 6.18.39+rpt-rpi-v8, ARM64)
+- **ESP-IDF:** v5.4.3 (경로: `~/esp/v5.4.3/esp-idf`) — 설치: `./setup-rpi.sh`
+- **툴체인:** `~/.espressif`
+- **Python:** 3.13.5 (시스템) / ESP-IDF 는 자체 venv 사용
+- **CMake:** 3.31.6 · **Ninja:** 1.12.1 · **빌드 시스템:** Ninja
 - **타겟:** ESP32-S3 (QFN56, 8MB PSRAM)
-- **시리얼 포트:** `/dev/ttyACM0`
+- **시리얼 포트:** `/dev/ttyACM0` (ESP32-S3 내장 USB) 또는 `/dev/ttyUSB0` (UART 브리지 보드)
 - **IDE:** VSCode + ESP-IDF Extension
+
+> 이 프로젝트는 macOS 에서 이관됐고, **2026-09-23 에 맥 시절 잔재를 모두 정리했다.**
+> 지운 것: `iis_config_tool/`(Tauri, 맥에 원본 보관) · `rpi-receiver/`(수집기가 대체) ·
+> `components/tsl2591/`(빌드 안 됨) · `flash.sh`(run.sh 와 중복) · 다른 칩용
+> `sdkconfig.defaults.*` 8개 · 맥 경로가 박힌 `docs/html`·`docs/01-plan`·`docs/superpowers` ·
+> `PROJECT.md`(TSL2591 시절 변경내역). 모두 git 이력에 남아 있어 복구 가능하다.
 
 ## 프로젝트 구조
 
@@ -33,12 +41,35 @@ ESP32-S3 기반 GPIO 신호 전송 테스트 프로젝트입니다. ESP-IDF 프�
   - `wifi_manager.h`: WiFi 관리 API 선언
   - `wifi_manager.c`: WiFi 연결, 재연결, 상태 모니터링 구현
   - `CMakeLists.txt`: 컴포넌트 빌드 설정
-- **components/tsl2591/**: TSL2591 조도 센서 드라이버 (레거시, 미사용)
+- **components/config_manager/**: NVS 기반 런타임 설정 (WiFi·서버IP·레이트·풀스케일)
+- **components/sensor_streamer/**: 패킷 조립 + 전송 (UDP / USB 시리얼) — 패킷 계약 v2
+- **components/serial_protocol/**: 시리얼 명령 프로토콜 (설정 주입·공장 초기화)
 - **main/**: 메인 애플리케이션 코드
-  - `blink_example_main.c`: app_main() 진입점, WiFi 초기화, 센서 읽기 태스크
+  - `main.c`: app_main() 진입점, 전송 모드 판정, WiFi 초기화, 스트리머 기동
   - `Kconfig.projbuild`: 프로젝트 설정 메뉴 정의 (WiFi, SPI 핀, 센서 설정)
   - `CMakeLists.txt`: 메인 컴포넌트 빌드 설정
-- **sdkconfig.defaults**: 기본 설정 파일
+- **sdkconfig.defaults**: 기본 설정 · **sdkconfig.defaults.deploy**: 배포 빌드 오버레이
+- **tools/**: 배포 빌드·패키징·USB 복구 스크립트 · **deploy/**: udev 규칙
+- **docs/**: 패킷 규격 · 시리얼 전송 설계 · FIFO 인터럽트 · 데이터시트
+- **rpi-collector/**: 공정 수집기 (배포물 ③)
+  - `iis3dwb_packet.py`: 패킷 파서 (v1 16B / v2 18B 헤더) — **정본은 여기 하나**
+  - `session.py`: 채널 상태머신. 진동센서 1대 ↔ 포토센서 1개가 독립 동작
+  - `sensor_link.py` / `writer.py`: 읽기·쓰기 스레드 분리 (조용한 유실 방지)
+  - `trigger.py`: 포토센서 엣지 인터럽트 (lgpio, DIN1=GPIO5 / DIN2=GPIO17)
+  - `slots.py`: USB 슬롯 ↔ 센서 이름 + **udev 고정 장치 이름**(`/dev/iis3dwb1`)
+  - `collect_cli.py` / `gui_preview.py`: CLI·GUI 진입점
+  - `udp_receiver.py`: WiFi(UDP) 수신 → CSV
+  - `bin_to_csv.py`: 바이너리 → CSV · `help.html`: 오프라인 사용설명서
+  - `selftest.py`: 센서·GPIO 없이 도는 자체 검증 12그룹
+- **boardcheck/**: 보드 수입검사 전용 펌웨어 + 실행기 (**독립 ESP-IDF 프로젝트**)
+  - 하드웨어를 변경했거나 새 보드를 받았을 때 소프트웨어 작업 전에 먼저 돌리는 관문
+  - `./run.sh` 한 줄로 굽고 검사해 PASS/FAIL 판정 (종료코드 0/1/2/3)
+  - 검사 6종: MCU · SPI/WHO_AM_I · 가속도 출력 · FIFO/ODR · **INT1 전기상태** · INT 발생률
+  - INT1 단선/극성반전을 핀 레벨에서 가른다 (실제로 단선 보드를 잡아낸 항목)
+  - 상위 프로젝트와 `components/iis3dwb` 만 공유하고 나머지는 빌드하지 않는다
+    (`set(COMPONENTS main)`) — 스트리밍 코드가 바뀌어도 검사 결과가 흔들리지 않는다
+- **sensor-setup-py/**: 센서 설정 주입 GUI (tkinter, 크로스플랫폼 — **라즈베리파이 권장**)
+- **setup-rpi.sh**: 라즈베리파이 환경 일괄 구성 (ESP-IDF + 의존 패키지 + 권한)
 
 ## 주요 명령어
 
@@ -50,8 +81,10 @@ source ~/esp/v5.4.3/esp-idf/export.sh
 # 또는 .bashrc에 alias 추가
 echo "alias get_idf='. ~/esp/v5.4.3/esp-idf/export.sh'" >> ~/.bashrc
 
-# 타겟 칩 설정 (프로젝트 설정 전 필수)
-idf.py set-target esp32s3      # ESP32-S3용 (현재 프로젝트)
+# 타겟 칩은 sdkconfig.defaults 의 CONFIG_IDF_TARGET="esp32s3" 로 고정되어 있어
+# 별도 set-target 없이 `idf.py build` 만으로 esp32s3 로 빌드된다.
+# (다른 칩으로 시험할 때만 명시적으로 바꾼다)
+# idf.py set-target esp32s3
 ```
 
 ### 프로젝트 설정
@@ -145,7 +178,11 @@ IIS3DWB SPI 통신 규칙:
 - 최대 재시도 횟수
 - 인증 모드 임계값
 
-**IIS3DWB 설정:**
+**IIS3DWB 설정** — 위치는 `components/iis3dwb/Kconfig` (menuconfig 에서는
+`Component config → IIS3DWB Vibration Sensor Configuration`).
+`boardcheck/` 가 같은 핀맵으로 검사해야 하므로 **핀 정의는 이 파일 한 곳에만**
+둔다. 두 프로젝트가 각자 핀 번호를 들고 있으면 하드웨어 변경 시 한쪽만 고쳐져
+"검사는 통과인데 실물은 다른 핀" 이 된다:
 - SPI 호스트 (SPI2/SPI3)
 - GPIO 핀 (MOSI, MISO, SCLK, CS)
 - SPI 클럭 속도 (100kHz ~ 10MHz)
@@ -218,12 +255,70 @@ WiFi 및 디바이스 정보가 터미널에 색상으로 강조 표시됩니다
 
 ## ESP-IDF 개발 참고사항
 
-### 라즈베리파이 5 환경 특이사항
-- **빌드 속도**: 첫 빌드 약 5분, 재빌드 약 30초
+### 라즈베리파이 환경 특이사항
+- **빌드 속도**: 라즈베리파이 4 기준 첫 빌드 약 10~15분, 재빌드 약 1~2분
+  (라즈베리파이 5 는 대략 절반. `setup-rpi.sh` 가 ccache 를 함께 설치한다)
 - **ccache 활용**: 재빌드 속도 향상을 위해 ccache 활성화 권장
 - **SSH 개발**: 원격 SSH로 개발 가능 (24시간 개발 서버)
-- **USB 권한**: `dialout` 그룹에 사용자 추가 필요 (이미 설정됨)
-- **시리얼 포트**: Windows COM 포트 대신 `/dev/ttyACM0` 사용
+- **USB 권한**: `dialout` 그룹에 사용자 추가 필요 (설정됨 — `id` 로 확인)
+- **시리얼 포트**: Windows COM 포트나 macOS `/dev/cu.*` 대신 `/dev/ttyACM0` 사용
+- **내장 UART 혼동 주의**: `/dev/ttyAMA*`, `/dev/serial0` 은 라즈베리파이 자체 UART로
+  IIS3DWB 와 무관하다. 스크립트·수신기 모두 이들을 후보에서 제외한다.
+- **메모리**: 8GB 모델 기준 여유. 2GB 모델에서 빌드 시 `-j2` 로 병렬도를 낮출 것.
+
+### 라즈베리파이 USB 시리얼 트러블슈팅 (실제 겪은 문제)
+
+**증상: 읽기는 되는데 쓰기만 영구 블로킹**
+- 부팅 로그는 정상 수신되지만 `esptool` 이 `Write timeout` 으로 실패
+- `write()` 가 반환하지 않고 `TIOCOUTQ`(pyserial `out_waiting`) 가 줄지 않음
+- 드라이버 unbind/rebind 로는 **복구되지 않는다** (엔드포인트 상태가 남는다)
+
+**원인**: USB-UART 브리지의 bulk OUT 엔드포인트 스톨. ModemManager 가 새로
+나타난 `ttyACM*` 을 모뎀으로 의심해 AT 명령을 쏘는 과정에서 유발되는 경우가 많다.
+
+**복구**: USB 장치 레벨 리셋 (USBDEVFS_RESET)
+```bash
+./tools/usb-recover.sh          # 자동으로 브리지를 찾아 리셋
+```
+
+**재발 방지**: `/etc/udev/rules.d/99-iis3dwb-no-modemmanager.rules` 로 ModemManager 가
+이 포트를 무시하게 한다 (`ID_MM_DEVICE_IGNORE=1`). 새 라즈베리파이에서는
+`setup-rpi.sh` 가 이 규칙을 설치한다.
+
+> ⚠️ 진단 시 주의: `python3` 출력을 파이프로 받으면 블록 버퍼링 때문에 `timeout` 으로
+> 죽일 때 출력이 유실된다. 시리얼 디버깅은 **반드시 `python3 -u`** 로 실행할 것.
+
+### 검증된 하드웨어 경로 (혼동 주의)
+
+**esptool(플래시·NVS 주입)과 앱의 시리얼 기능은 서로 다른 채널을 쓴다.**
+
+| 기능 | 채널 | 이 보드에서 |
+|------|------|------------|
+| `esptool` 플래시 / NVS 주입 | ROM 부트로더 **UART0** | ✅ Cypress USB-UART 브리지로 동작 |
+| 콘솔 로그 (`idf.py monitor`) | **UART0** (`CONFIG_ESP_CONSOLE_UART_NUM=0`) | ✅ 같은 브리지 |
+| 시리얼 스트리밍 (`transport=2`) | **UART0** 2 Mbps (`CONFIG_STREAM_SERIAL_CHANNEL_UART0`) | ✅ 26,733 Hz · 유실 0% 실측 |
+| 앱 설정 명령 (`serial_protocol`) | 네이티브 USB (`usb_serial_jtag_read_bytes`) | ❌ 이 보드는 네이티브 USB 미배선 |
+
+**이 보드의 USB 커넥터는 ESP32-S3 내장 USB 가 아니라 Cypress 브리지로 이어진다.**
+그래서 스트리밍을 UART0 로 내보내도록 `CONFIG_STREAM_SERIAL_CHANNEL` 을 두었다.
+내장 USB 로 직결된 보드라면 `USB_JTAG` 로 바꾼다 — 틀리면 설정은 주입되지만
+데이터가 어디에도 도달하지 않아 원인 찾기 어려운 고장으로 보인다.
+
+UART0 는 실제 UART 라 보드레이트가 속도를 직접 제한한다. 26.6 kHz 는
+**1.62 Mbps** 를 요구하므로(26,667 × 6B × 10/8 + 헤더) 2,000,000 bps 가 최소값이다.
+
+### 배포물 세 가지 (섞지 말 것)
+
+| 배포물 | 어디서 쓰나 | ESP-IDF 필요 |
+|---|---|---|
+| `boardcheck/` | 보드 진단 — 새 보드·하드웨어 변경 시 **가장 먼저** | ✗ (dist/ 커밋됨) |
+| `sensor-setup-py/` | 펌웨어 굽기 + 설정 주입 | ✗ (패키지의 firmware/ 사용) |
+| `rpi-collector/` | 현장 RPi 에서 데이터 수집 | ✗ |
+
+**개발용 `./run.sh` 로 구운 펌웨어를 출하하지 말 것.** 개발 빌드는
+`CONFIG_WIFI_PREFER_NVS=n` 이라 설정툴이 주입한 WiFi 를 무시한다. 배포에는
+`tools/build-deploy.sh` → `tools/make-deploy-package.sh` 를 쓴다
+(`esp_flash.flash_firmware()` 가 manifest 의 `wifi_prefer_nvs` 를 단정해 막는다).
 
 ### FreeRTOS 사용
 - `app_main()`에서 `xTaskCreate()`로 센서 읽기 태스크 생성
