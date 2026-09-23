@@ -672,9 +672,12 @@ void app_main(void)
         sensor_streamer_stats_t st;
         sensor_streamer_get_stats(&st);
         if (st.packets_sent > 0 || st.dropped > 0) {
-            ESP_LOGI(TAG, "[스트리밍] 패킷=%lu 샘플=%lu 드롭=%lu 에러=%lu INT=%lu",
+            /* FIFO오버런: 센서가 오래된 샘플을 덮어쓴 횟수. 드롭(링버퍼 거부)과
+             * 다른 경로의 유실이므로 함께 봐야 한다 — 이 값이 0 이 아니면
+             * "드롭=0" 이어도 샘플을 잃고 있다. */
+            ESP_LOGI(TAG, "[스트리밍] 패킷=%lu 샘플=%lu 드롭=%lu 에러=%lu INT=%lu FIFO오버런=%lu",
                      st.packets_sent, st.samples_sent, st.dropped, st.send_errors,
-                     st.int_count);
+                     st.int_count, st.fifo_overrun);
         }
     }
 }

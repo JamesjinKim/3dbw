@@ -22,11 +22,38 @@
 #include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "driver/usb_serial_jtag.h"
+#include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "STREAMER";
+
+/* ===== 시리얼(USB 직결) 출력 채널 =====
+ * 보드 배선에 따라 갈린다. Kconfig 로 고정한다 (menuconfig →
+ * "Serial Streaming (USB direct) Configuration").
+ *
+ *  · UART0    : USB 커넥터가 USB-UART 브리지로 이어지는 보드.
+ *               실제 UART 라 보드레이트가 속도를 제한한다.
+ *  · USB_JTAG : USB 커넥터가 ESP32-S3 내장 USB(GPIO19/20)에 직결된 보드.
+ *               USB CDC 라 보드레이트는 형식적 값이다.
+ *
+ * 왜 선택지로 두는가 — 이 둘은 물리적으로 다른 핀이며, 배선과 어긋나면
+ * 데이터가 어디에도 도달하지 않는다(설정은 정상 주입되므로 증상이 모호하다).
+ */
+#if CONFIG_STREAM_SERIAL_CHANNEL_UART0
+#define SERIAL_CH_UART0        1
+#define SERIAL_UART_PORT       UART_NUM_0
+#define SERIAL_UART_BAUD       CONFIG_STREAM_SERIAL_UART_BAUD
+/* 콘솔 기본 보드레이트 — 정지 시 이 값으로 되돌려 로그를 다시 읽을 수 있게 한다 */
+#define SERIAL_UART_BAUD_IDLE  CONFIG_ESP_CONSOLE_UART_BAUDRATE
+#else
+#define SERIAL_CH_UART0        0
+#endif
+
+/* 패킷 1218B 를 매번 블로킹 없이 넘기기 위한 TX 버퍼.
+ * 26.6kHz(162KB/s)에서 8KB ≈ 50ms 분량의 여유. */
+#define SERIAL_TX_BUF_SIZE     8192
 
 /* INT1 GPIO (Kconfig). -1 = 인터럽트 미사용(효율 폴링) */
 #ifdef CONFIG_IIS3DWB_INT1_GPIO
@@ -97,6 +124,60 @@ static void IRAM_ATTR fifo_isr(void *arg)
     xSemaphoreGiveFromISR(s.fifo_sem, &hpw);
     if (hpw) portYIELD_FROM_ISR();
 }
+
+#if CONFIG_STREAM_DIAG_INT_PIN
+/* INT 핀 전기적 상태 진단 (1회).
+ *
+ * 호출부(스트리밍 시작)가 같은 조건으로 묶여 있어, 여기서도 #if 로 감싸지
+ * 않으면 기본 빌드(=n)마다 -Wunused-function 경고가 난다. 새 경고를 가리므로
+ * 조건을 맞춰 둔다. 같은 판정 로직의 독립 구현은 boardcheck/ 에도 있다
+ * (그쪽은 검사 전용이라 항상 켜져 있다).
+ *
+ * 센서가 "watermark 도달" 상태인데도 ESP32 핀이 LOW 로 읽히는 경우, 원인이
+ * (a) 신호가 아예 오지 않음(커넥터 단선/센서가 핀을 구동 안 함) 인지
+ * (b) LOW 로 능동 구동 중(극성 반전) 인지를 구분해야 한다.
+ * 내부 풀업/풀다운을 번갈아 걸어 핀이 끌려가는지 보면 갈린다:
+ *
+ *   풀업→1, 풀다운→0  : 아무도 구동하지 않음 = 단선/미구동
+ *   풀업→0, 풀다운→0  : LOW 로 능동 구동 = 극성 반전(LOW_LEVEL 트리거 필요)
+ *   풀업→1, 풀다운→1  : HIGH 로 능동 구동 = 신호는 옴 (ESP32 인터럽트 설정 문제)
+ */
+static void diag_int_pin(int gpio, const char *name)
+{
+    if (gpio < 0) return;
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << gpio,
+        .mode = GPIO_MODE_INPUT,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    int lv[3];
+    const struct { gpio_pullup_t up; gpio_pulldown_t down; } cfg[3] = {
+        { GPIO_PULLUP_ENABLE,  GPIO_PULLDOWN_DISABLE },   /* 풀업 */
+        { GPIO_PULLUP_DISABLE, GPIO_PULLDOWN_ENABLE  },   /* 풀다운 */
+        { GPIO_PULLUP_DISABLE, GPIO_PULLDOWN_DISABLE },   /* 플로팅 */
+    };
+    for (int i = 0; i < 3; i++) {
+        io.pull_up_en = cfg[i].up;
+        io.pull_down_en = cfg[i].down;
+        gpio_config(&io);
+        vTaskDelay(pdMS_TO_TICKS(3));       /* 핀 정착 대기 */
+        lv[i] = gpio_get_level((gpio_num_t)gpio);
+    }
+
+    const char *verdict;
+    if (lv[0] == 1 && lv[1] == 0) {
+        verdict = "아무도 구동 안 함 → 커넥터 단선 또는 센서가 핀을 구동하지 않음";
+    } else if (lv[0] == 0 && lv[1] == 0) {
+        verdict = "LOW 로 능동 구동 → 극성 반전 (LOW_LEVEL 트리거 필요)";
+    } else if (lv[0] == 1 && lv[1] == 1) {
+        verdict = "HIGH 로 능동 구동 → 신호는 도달 (ESP32 인터럽트 설정 문제)";
+    } else {
+        verdict = "판정 불가";
+    }
+    ESP_LOGW(TAG, "[핀진단] %s=IO%d  풀업=%d 풀다운=%d 플로팅=%d → %s",
+             name, gpio, lv[0], lv[1], lv[2], verdict);
+}
+#endif /* CONFIG_STREAM_DIAG_INT_PIN */
 
 uint32_t sensor_streamer_rate_hz(uint8_t rate_step)
 {
@@ -214,19 +295,72 @@ static void sensor_task_fifo(void *arg)
             /* ISR 서비스 (이미 설치돼 있으면 INVALID_STATE 무시) */
             esp_err_t isr_ret = gpio_install_isr_service(0);
             if (isr_ret == ESP_OK || isr_ret == ESP_ERR_INVALID_STATE) {
-                gpio_isr_handler_add(INT1_GPIO, fifo_isr, (void *)(intptr_t)INT1_GPIO);
+                /* 설정 단계의 실패를 삼키지 않는다.
+                 * 과거에는 이 세 호출의 반환값을 모두 버리고 성공 배너를 무조건
+                 * 찍었다. 그래서 레지스터 쓰기가 실패해도 로그가 정상과 똑같아,
+                 * "INT 모드인데 속도가 안 나온다" 의 원인을 로그로 알 수 없었다. */
+                esp_err_t e_isr = gpio_isr_handler_add(INT1_GPIO, fifo_isr,
+                                                       (void *)(intptr_t)INT1_GPIO);
                 /* 센서 측: WTM 설정 + INT1 라우팅 */
-                iis3dwb_fifo_set_watermark(s.cfg.sensor, STREAM_INT_WTM);
-                iis3dwb_fifo_route_int1(s.cfg.sensor, true);
-                s.int_enabled = true;
-                ESP_LOGI(TAG, "FIFO 인터럽트 모드 (INT1=IO%d, WTM=%d)",
-                         INT1_GPIO, STREAM_INT_WTM);
+                esp_err_t e_wtm = iis3dwb_fifo_set_watermark(s.cfg.sensor,
+                                                             STREAM_INT_WTM);
+                esp_err_t e_rt = iis3dwb_fifo_route_int1(s.cfg.sensor, true);
+
+                if (e_isr != ESP_OK || e_wtm != ESP_OK || e_rt != ESP_OK) {
+                    ESP_LOGW(TAG, "INT 설정 실패 (isr=%s wtm=%s route=%s) → 폴링으로 시작",
+                             esp_err_to_name(e_isr), esp_err_to_name(e_wtm),
+                             esp_err_to_name(e_rt));
+                } else {
+                    /* 레지스터가 실제로 들어갔는지 읽어back 해 남긴다.
+                     * INT1_CTRL bit3(FIFO_TH) 가 0 이면 센서가 INT1 을 구동하지 않는다. */
+                    uint8_t int1_ctrl = 0, fifo_ctrl1 = 0;
+                    iis3dwb_read_register(s.cfg.sensor, IIS3DWB_REG_INT1_CTRL,
+                                          &int1_ctrl);
+                    iis3dwb_read_register(s.cfg.sensor, IIS3DWB_REG_FIFO_CTRL1,
+                                          &fifo_ctrl1);
+                    s.int_enabled = true;
+                    ESP_LOGI(TAG, "FIFO 인터럽트 모드 (INT1=IO%d, WTM=%d) "
+                                  "INT1_CTRL=0x%02X(FIFO_TH=%d) FIFO_CTRL1=%u",
+                             INT1_GPIO, STREAM_INT_WTM, int1_ctrl,
+                             (int1_ctrl & IIS3DWB_INT1_FIFO_TH) ? 1 : 0, fifo_ctrl1);
+                    if (!(int1_ctrl & IIS3DWB_INT1_FIFO_TH)) {
+                        ESP_LOGW(TAG, "INT1_CTRL 에 FIFO_TH 가 설정되지 않았다 "
+                                      "— 센서가 INT1 을 구동하지 않는다");
+                    }
+                }
             }
         }
     }
     if (!s.int_enabled) {
         ESP_LOGI(TAG, "FIFO 효율 폴링 모드 (INT 미사용)");
     }
+
+#if CONFIG_STREAM_DIAG_INT_PIN
+    /* 핀 전기 상태 진단 (진단 빌드에서만).
+     * FIFO 가 watermark 를 넘긴 뒤에 재야 의미가 있다 — 26.6kHz 에서 64샘플은
+     * 2.4ms 면 쌓이므로 잠깐 기다린다. INT2(IO5)는 대조군으로 함께 본다
+     * (둘 다 같은 커넥터를 지나므로, 둘의 차이가 단서가 된다). */
+    {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        uint16_t c = 0; uint8_t f = 0;
+        iis3dwb_fifo_status(s.cfg.sensor, &c, &f);
+        ESP_LOGW(TAG, "[핀진단] 센서 상태: FIFO=%u WTM=%d (WTM=1 이어야 INT1 이 HIGH 여야 한다)",
+                 c, (f & IIS3DWB_FIFO_STATUS_WTM) ? 1 : 0);
+        diag_int_pin(INT1_GPIO, "INT1");
+        diag_int_pin(CONFIG_IIS3DWB_INT2_GPIO, "INT2(대조군)");
+        /* 진단이 핀 설정을 건드렸으므로 INT 모드면 원래 설정으로 되돌린다 */
+        if (s.int_enabled) {
+            gpio_config_t io = {
+                .pin_bit_mask = 1ULL << INT1_GPIO,
+                .mode = GPIO_MODE_INPUT,
+                .intr_type = GPIO_INTR_HIGH_LEVEL,
+                .pull_down_en = GPIO_PULLDOWN_ENABLE,
+                .pull_up_en = GPIO_PULLUP_DISABLE,
+            };
+            gpio_config(&io);
+        }
+    }
+#endif
 
     iis3dwb_raw_data_t burst[IIS3DWB_FIFO_BURST_MAX];
 
@@ -242,12 +376,42 @@ static void sensor_task_fifo(void *arg)
             bool got = (xSemaphoreTake(s.fifo_sem,
                         pdMS_TO_TICKS(FIFO_INT_TIMEOUT_MS)) == pdTRUE);
             if (!got) {
-                /* INT 안 옴 → fallback 카운트 (오배선/오설정 대비) */
+                /* INT 안 옴 → fallback 카운트 (오배선/오설정 대비).
+                 *
+                 * 과거에는 `a == 0 &&` 조건이 붙어 있었다. 그런데 ODR 이 26.667kHz
+                 * 로 고정이라 FIFO 가 비는 순간이 없어(항상 512) 그 조건이 결코
+                 * 성립하지 않았다. 즉 fallback 이 죽은 코드였고, 루프는 50ms
+                 * 타임아웃으로만 돌아 512워드 FIFO 상한에 걸려 목표의 36%
+                 * (실측 1197Hz) 만 내면서도 스스로는 정상이라고 보고했다.
+                 * 타임아웃 자체가 "INT 미발생" 의 증거이므로 그것만으로 센다. */
                 uint16_t a = 0;
-                iis3dwb_fifo_count(s.cfg.sensor, &a);
-                if (a == 0 && ++int_miss > FIFO_INT_MISS_MAX) {
+                uint8_t fst = 0;
+                (void)iis3dwb_fifo_status(s.cfg.sensor, &a, &fst);
+                if (++int_miss > FIFO_INT_MISS_MAX) {
                     s.int_enabled = false;
-                    ESP_LOGW(TAG, "INT 미발생 → 효율 폴링 fallback");
+                    /* 원인을 세 갈래로 가르는 진단.
+                     *   WTM=1 & 핀 LOW  → 센서는 내부적으로 watermark 도달을
+                     *                     알리는데 INT1 핀이 구동되지 않음
+                     *                     (핀 출력 비활성 / 배선 / 극성)
+                     *   WTM=1 & 핀 HIGH → 핀은 올라갔는데 ESP32 가 못 받음
+                     *                     (GPIO arming / ISR 등록 문제)
+                     *   WTM=0           → 센서가 watermark 도달로 보지 않음
+                     *                     (WTM 값·FIFO 모드 설정 문제)
+                     * INT1_CTRL 도 다시 읽어 중간에 지워졌는지 확인한다. */
+                    uint8_t int1_ctrl = 0;
+                    (void)iis3dwb_read_register(s.cfg.sensor,
+                                                IIS3DWB_REG_INT1_CTRL, &int1_ctrl);
+                    ESP_LOGW(TAG, "INT 미발생 %ums → 효율 폴링 fallback | "
+                                  "FIFO=%u WTM=%d OVR=%d FULL=%d | IO%d=%d | "
+                                  "INT1_CTRL=0x%02X(FIFO_TH=%d)",
+                             (unsigned)(FIFO_INT_TIMEOUT_MS * (FIFO_INT_MISS_MAX + 1)),
+                             a,
+                             (fst & IIS3DWB_FIFO_STATUS_WTM) ? 1 : 0,
+                             (fst & IIS3DWB_FIFO_STATUS_OVR) ? 1 : 0,
+                             (fst & IIS3DWB_FIFO_STATUS_FULL) ? 1 : 0,
+                             INT1_GPIO, gpio_get_level((gpio_num_t)INT1_GPIO),
+                             int1_ctrl,
+                             (int1_ctrl & IIS3DWB_INT1_FIFO_TH) ? 1 : 0);
                 }
             } else {
                 int_miss = 0;
@@ -256,9 +420,20 @@ static void sensor_task_fifo(void *arg)
             vTaskDelay(poll_wait);  /* 효율 폴링 (fallback 또는 INT 미사용) */
         }
 
+        /* FIFO 상태 조회 실패 시에도 아래 INT 재활성화를 반드시 지나가야 한다.
+         * 과거에는 여기서 continue 로 빠져 루프 말미의 gpio_intr_enable() 을
+         * 건너뛰었다. ISR 은 진입 시 INT 를 끄고 그 지점에서만 되살리므로,
+         * SPI 오류가 한 번만 나도 인터럽트가 영구히 꺼진 채 50ms 타임아웃
+         * 루프로 떨어졌다(복구 경로 없음). */
         uint16_t avail = 0;
-        if (iis3dwb_fifo_count(s.cfg.sensor, &avail) != ESP_OK) {
-            continue;
+        uint8_t fifo_st = 0;
+        esp_err_t cnt_ret = iis3dwb_fifo_status(s.cfg.sensor, &avail, &fifo_st);
+        if (cnt_ret != ESP_OK) {
+            avail = 0;              /* 이번 회차는 비우지 않고 넘어간다 */
+        } else if (fifo_st & IIS3DWB_FIFO_STATUS_OVR) {
+            /* 오버런 = 센서가 오래된 샘플을 덮어썼다 = 조용한 유실.
+             * 이걸 세지 않으면 "드롭 0" 으로 보고되면서 실제로는 샘플을 잃는다. */
+            s.stats.fifo_overrun++;
         }
         /* 쌓인 만큼 버스트로 모두 비움 */
         while (avail > 0 && s.running) {
@@ -311,10 +486,18 @@ static void sensor_task_fifo(void *arg)
 static int tx_send(const uint8_t *packet, size_t len)
 {
     if (s.cfg.transport == STREAM_TRANSPORT_SERIAL) {
+#if SERIAL_CH_UART0
+        /* UART0 로 내보낸다 (USB-UART 브리지 경유).
+         * uart_write_bytes 는 TX 링버퍼에 복사 후 즉시 반환하며,
+         * 버퍼가 가득하면 공간이 날 때까지 블로킹한다. 전량 복사되지 않으면 실패. */
+        int w = uart_write_bytes(SERIAL_UART_PORT, (const char *)packet, len);
+        return (w == (int)len) ? w : -1;
+#else
         /* write_bytes는 실패 시 음수가 아니라 0을 반환한다(드라이버 소스 확인).
          * 전량 전송된 경우만 성공으로 보고, 그 외는 -1로 실패 집계한다. */
         int w = usb_serial_jtag_write_bytes(packet, len, pdMS_TO_TICKS(100));
         return (w == (int)len) ? w : -1;
+#endif
     }
 
     /* UDP: ENOMEM(lwip TX 버퍼 일시 부족) 시 양보하며 재시도.
@@ -422,8 +605,35 @@ esp_err_t sensor_streamer_start(const sensor_streamer_config_t *cfg)
          * 이때 s.usb_installed 는 false 로 남겨 둔다 — 우리가 설치하지 않았고
          * serial_protocol 이 계속 쓰고 있는 드라이버를 stop() 에서 제거하면
          * 명령 수신 경로가 끊기기 때문이다(소유권 표시). */
+#if SERIAL_CH_UART0
+        /* UART0 채널: 콘솔과 같은 UART 를 데이터 전용으로 전환한다.
+         *
+         * uart_driver_install 은 TX 링버퍼를 만들어 uart_write_bytes 가
+         * 블로킹 없이 반환하게 한다. 콘솔(printf/ESP_LOG)은 VFS 경로로
+         * 나가므로 드라이버 설치 자체가 콘솔을 끊지는 않지만, 같은 선을
+         * 공유하므로 아래에서 로그를 차단해 패킷과 섞이지 않게 한다.
+         *
+         * uart_vfs_use_driver() 는 부르지 않는다 — 콘솔을 드라이버 경로로
+         * 옮기면 스트리밍 중 로그가 TX 버퍼를 잠식한다. */
+        esp_err_t uret = uart_driver_install(SERIAL_UART_PORT,
+                                             256,                    /* RX: 안 씀, 최소값 */
+                                             SERIAL_TX_BUF_SIZE,     /* TX: 패킷 여유분 */
+                                             0, NULL, 0);
+        if (uret == ESP_OK) {
+            s.usb_installed = true;          /* 우리가 설치 → stop() 에서 해제 */
+        } else if (uret == ESP_ERR_INVALID_STATE) {
+            ESP_LOGI(TAG, "UART0 드라이버가 이미 설치됨 — 기존 인스턴스 공유");
+        } else {
+            ESP_LOGE(TAG, "UART0 드라이버 설치 실패: %s", esp_err_to_name(uret));
+            return uret;
+        }
+
+        /* 보드레이트 변경은 아래 "로그 차단" 이후에 한다 — 순서가 중요하다.
+         * 먼저 올려버리면 그 사이에 나가는 로그가 호스트(콘솔 보드레이트)에서
+         * 깨져 보이고, 설정툴이 시작 확인 문구를 읽을 수 없다. */
+#else
         usb_serial_jtag_driver_config_t ucfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
-        ucfg.tx_buffer_size = 8192;   /* rx_buffer_size 는 기본값 유지 — 0이면 안 됨 */
+        ucfg.tx_buffer_size = SERIAL_TX_BUF_SIZE;   /* rx_buffer_size 는 기본값 유지 — 0이면 안 됨 */
         esp_err_t uret = usb_serial_jtag_driver_install(&ucfg);
         if (uret == ESP_OK) {
             s.usb_installed = true;          /* 우리가 설치 → stop() 에서 해제 */
@@ -435,13 +645,49 @@ esp_err_t sensor_streamer_start(const sensor_streamer_config_t *cfg)
             ESP_LOGE(TAG, "USB 드라이버 설치 실패: %s", esp_err_to_name(uret));
             return uret;
         }
+#endif
 
         /* 로그와 데이터가 같은 USB 포트를 쓰므로, 로그가 섞이면 패킷이 깨진다.
          * 스트리밍 동안 로그를 끄고 stop에서 복원한다.
          * (끄기 직전 이미 나간 바이트는 수신 측이 매직으로 재동기화한다.) */
+        /* ★ 설정툴이 읽는 시작 확인 문구 — 로그를 끄기 **전에** 내보낸다.
+         * 시리얼 모드에서는 이 줄이 "스트리밍이 실제로 시작됐다" 는 유일한
+         * 사람이 읽을 수 있는 증거다. 이후로는 로그가 차단되고 포트는 패킷
+         * 전용이 되므로, 여기서 못 내보내면 확인할 방법이 없다.
+         * (문구에 화살표를 포함해 "스트리밍 시작 실패" 와 구분한다 — 부분문자열
+         *  매칭으로 실패를 성공으로 오판하지 않도록.) */
+#if SERIAL_CH_UART0
+        ESP_LOGI(TAG, "스트리밍 시작 → USB 직결/UART0 %d bps (%lu Hz, %s, ±%ug)",
+                 SERIAL_UART_BAUD,
+                 sensor_streamer_rate_hz(cfg->rate_step),
+                 cfg->rate_step == 0 ? "폴링" : "FIFO", cfg->full_scale_g);
+#else
+        ESP_LOGI(TAG, "스트리밍 시작 → USB 직결 (%lu Hz, %s, ±%ug)",
+                 sensor_streamer_rate_hz(cfg->rate_step),
+                 cfg->rate_step == 0 ? "폴링" : "FIFO", cfg->full_scale_g);
+#endif
+        /* 남은 로그 바이트가 콘솔 보드레이트로 모두 나간 뒤에 전환해야 한다. */
+#if SERIAL_CH_UART0
+        uart_wait_tx_done(SERIAL_UART_PORT, pdMS_TO_TICKS(200));
+#endif
+
         s.saved_log = esp_log_level_get("*");
         esp_log_level_set("*", ESP_LOG_NONE);
         s.log_silenced = true;   /* 드라이버를 공유하든 직접 설치했든 복원 대상 */
+
+#if SERIAL_CH_UART0
+        /* 이제 데이터 전용 구간 — 보드레이트를 올린다. 정지 시 콘솔 기본값으로 복원.
+         * 플래시·부팅로그는 항상 콘솔 보드레이트이므로 esptool 경로에 영향 없다. */
+        esp_err_t bret = uart_set_baudrate(SERIAL_UART_PORT, SERIAL_UART_BAUD);
+        if (bret != ESP_OK) {
+            /* 로그가 꺼져 있으니 되살려 원인을 알린다 */
+            esp_log_level_set("*", s.saved_log);
+            s.log_silenced = false;
+            ESP_LOGE(TAG, "UART0 보드레이트 설정 실패(%d): %s",
+                     SERIAL_UART_BAUD, esp_err_to_name(bret));
+            return bret;
+        }
+#endif
     } else {
         /* 현재는 UDP만 구현 (TCP는 후속) */
         if (cfg->transport != STREAM_TRANSPORT_UDP) {
@@ -497,11 +743,8 @@ esp_err_t sensor_streamer_start(const sensor_streamer_config_t *cfg)
     xTaskCreate(tx_task, "strm_tx", 4096, NULL, 5, &s.tx_task_h);
 
     if (s.cfg.transport == STREAM_TRANSPORT_SERIAL) {
-        /* 이 시점에는 로그가 꺼져 있어 출력되지 않는다(포맷만 유지). */
-        ESP_LOGI(TAG, "스트리밍 시작 → USB 직결 (%lu Hz, %s, ±%ug)",
-                 sensor_streamer_rate_hz(cfg->rate_step),
-                 cfg->rate_step == 0 ? "폴링" : "FIFO",
-                 cfg->full_scale_g);
+        /* 시리얼 모드의 시작 확인 문구는 위에서 로그 차단 전에 이미 내보냈다.
+         * 여기서 다시 찍어도 로그가 꺼져 있어 나가지 않는다. */
     } else {
         ESP_LOGI(TAG, "스트리밍 시작 → %s:%u (%lu Hz, %s, ±%ug)",
                  cfg->server_ip, cfg->server_port,
@@ -526,7 +769,14 @@ void sensor_streamer_stop(void)
         /* 남은 패킷이 호스트로 나갈 시간을 준 뒤 정리한다.
          * (드라이버를 공유 중이어도 배수는 필요 — 로그를 되살리기 전에
          *  남은 패킷 바이트를 모두 내보내야 섞이지 않는다.) */
+#if SERIAL_CH_UART0
+        uart_wait_tx_done(SERIAL_UART_PORT, pdMS_TO_TICKS(500));
+        /* 로그를 복원하기 전에 보드레이트를 콘솔 기본값으로 되돌린다.
+         * 순서가 뒤바뀌면 복원된 로그가 스트리밍 보드레이트로 나가 깨진다. */
+        uart_set_baudrate(SERIAL_UART_PORT, SERIAL_UART_BAUD_IDLE);
+#else
         usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
+#endif
     }
     if (s.log_silenced) {
         esp_log_level_set("*", s.saved_log);   /* 로그 복원 — 이후 진단 가능 */
@@ -535,7 +785,11 @@ void sensor_streamer_stop(void)
     if (s.usb_installed) {
         /* 우리가 설치한 드라이버만 해제한다. serial_protocol 이 설치한
          * 공유 인스턴스를 제거하면 PC 설정 툴의 명령 수신이 끊긴다. */
+#if SERIAL_CH_UART0
+        uart_driver_delete(SERIAL_UART_PORT);
+#else
         usb_serial_jtag_driver_uninstall();
+#endif
         s.usb_installed = false;
     }
     if (s.ringbuf) {

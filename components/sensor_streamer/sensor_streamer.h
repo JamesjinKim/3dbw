@@ -55,6 +55,12 @@ typedef struct {
     uint32_t dropped;        /**< 링버퍼 오버런으로 버린 샘플 수 */
     uint32_t send_errors;    /**< 전송 실패 횟수 */
     uint32_t int_count;      /**< FIFO watermark INT 발생 횟수 (인터럽트 모드 진단) */
+    uint32_t fifo_overrun;   /**< 센서 FIFO 오버런 감지 횟수.
+                              *
+                              * FIFO 는 Continuous 모드라 가득 차면 오래된 샘플을
+                              * 조용히 덮어쓴다. 이 손실은 `dropped`(링버퍼 거부)에
+                              * 잡히지 않아, 이 값이 없으면 "드롭 0" 인데 실제로는
+                              * 샘플을 잃고 있는 상태를 구분할 수 없다. */
 } sensor_streamer_stats_t;
 
 /**

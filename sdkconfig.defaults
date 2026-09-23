@@ -1,3 +1,9 @@
+# 타겟 칩 고정 (ESP32-S3)
+# 이 값이 없으면 sdkconfig 가 없는 상태에서 `idf.py build` 가 기본 타겟(esp32)으로
+# 빌드를 시작하고, ESP32 에는 USB Serial/JTAG 주변장치가 없어
+# `usb_serial_jtag_*` 미정의 링크 에러로 실패한다. (fullclean 직후에도 동일)
+CONFIG_IDF_TARGET="esp32s3"
+
 # Console Configuration
 # 콘솔: UART(primary) + USB Serial/JTAG(secondary). 앱이 안정 부팅하는 조합.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
@@ -18,15 +24,18 @@ CONFIG_WIFI_PASSWORD="your-password"
 CONFIG_WIFI_MAXIMUM_RETRY=5
 CONFIG_WIFI_SCAN_AUTH_MODE_THRESHOLD=3
 
-# TSL2591 Default Configuration
-# I2C_NUM_1 (EX01) with custom GPIO pins
-CONFIG_TSL2591_I2C_PORT=1
-CONFIG_TSL2591_I2C_SDA_GPIO=4
-CONFIG_TSL2591_I2C_SCL_GPIO=11
-CONFIG_TSL2591_I2C_FREQ_HZ=100000
-CONFIG_TSL2591_INTEGRATION_100MS=y
-CONFIG_TSL2591_GAIN_MED=y
-CONFIG_TSL2591_READ_INTERVAL_MS=1000
+# TSL2591 Default Configuration (레거시 — 현재 빌드에서 제외됨)
+# components/tsl2591 은 main/CMakeLists.txt 의 REQUIRES 에 없어 빌드되지 않으며,
+# 따라서 아래 CONFIG_TSL2591_* 심볼도 존재하지 않는다. 그대로 두면 빌드마다
+# "unknown kconfig symbol" 경고가 떠서 새 경고를 가리므로 주석 처리한다.
+# 이 드라이버를 되살릴 때 main/CMakeLists.txt 에 tsl2591 을 추가하고 아래를 해제할 것.
+# CONFIG_TSL2591_I2C_PORT=1
+# CONFIG_TSL2591_I2C_SDA_GPIO=4
+# CONFIG_TSL2591_I2C_SCL_GPIO=11
+# CONFIG_TSL2591_I2C_FREQ_HZ=100000
+# CONFIG_TSL2591_INTEGRATION_100MS=y
+# CONFIG_TSL2591_GAIN_MED=y
+# CONFIG_TSL2591_READ_INTERVAL_MS=1000
 
 # 고속 FIFO: SPI 8MHz (FIFO 7B×26.6kHz=1.5Mbps 처리, 1MHz로는 병목)
 CONFIG_IIS3DWB_SPI_FREQ_HZ=8000000

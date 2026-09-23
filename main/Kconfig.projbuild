@@ -81,133 +81,68 @@ menu "Status LED Configuration"
 
 endmenu
 
-menu "IIS3DWB Vibration Sensor Configuration"
+menu "Serial Streaming (USB direct) Configuration"
 
-    config IIS3DWB_SPI_HOST
-        int "SPI Host (2=SPI2, 3=SPI3)"
-        default 2
-        range 2 3
+    choice STREAM_SERIAL_CHANNEL
+        prompt "Serial streaming output channel"
+        default STREAM_SERIAL_CHANNEL_UART0
         help
-            SPI host number. Use 2 for SPI2_HOST or 3 for SPI3_HOST.
-            Default: 2 (SPI2_HOST)
+            transport=2 (USB 직결) 일 때 진동 데이터를 내보낼 물리 채널.
 
-    config IIS3DWB_SPI_MOSI_GPIO
-        int "SPI MOSI GPIO Number"
-        default 13
-        help
-            GPIO number for SPI MOSI (Master Out Slave In).
-            This connects to SDA/SDI on IIS3DWB.
+            보드 배선에 따라 반드시 맞춰야 한다. 틀리면 설정은 주입되지만
+            데이터가 어디에도 도달하지 않아 원인 찾기 어려운 고장으로 보인다.
 
-    config IIS3DWB_SPI_MISO_GPIO
-        int "SPI MISO GPIO Number"
-        default 12
-        help
-            GPIO number for SPI MISO (Master In Slave Out).
-            This connects to SDO on IIS3DWB.
+            판별 방법 — 보드를 PC/라즈베리파이에 꽂고 lsusb 확인:
+              · 303a:xxxx (Espressif) 로 잡히면  → USB_JTAG
+              · 04b4/10c4/1a86/0403 등 브리지칩 → UART0
 
-    config IIS3DWB_SPI_SCLK_GPIO
-        int "SPI SCLK GPIO Number"
-        default 14
-        help
-            GPIO number for SPI SCLK (Serial Clock).
-            This connects to SCL on IIS3DWB.
+        config STREAM_SERIAL_CHANNEL_UART0
+            bool "UART0 (USB-UART 브리지 경유)"
+            help
+                보드의 USB 커넥터가 USB-UART 브리지(CP210x/CH340/FTDI/Cypress 등)로
+                이어지는 경우. 콘솔과 같은 UART0 를 쓰므로 스트리밍 중 로그는 차단된다.
 
-    config IIS3DWB_SPI_CS_GPIO
-        int "SPI CS GPIO Number"
-        default 15
-        help
-            GPIO number for SPI CS (Chip Select).
-            This connects to CS on IIS3DWB.
+                실제 UART 라 보드레이트가 속도를 직접 제한한다:
+                  115200 → 약 1 kHz / 230400 → 3.3 kHz
+                  921600 → 13.3 kHz / 2000000 → 26.6 kHz
 
-    config IIS3DWB_INT1_GPIO
-        int "IIS3DWB INT1 GPIO (FIFO watermark interrupt)"
-        default 4
-        range -1 48
-        help
-            ESP32-S3 GPIO connected to IIS3DWB INT1 pin.
-            HW pinmap (담당자 확정): INT1 -> IO4. (실기기 검증 완료)
-            실제 인터럽트 사용 여부는 사용자 설정(read_mode, NVS)이 결정:
-            read_mode=1(인터럽트) 선택 시 이 핀으로 watermark INT 수신 → 26.6kHz,
-            read_mode=0(폴링/자동) 또는 INT 미수신 시 효율 폴링으로 자동 동작.
-            -1 로 두면 핀 자체를 사용하지 않음 (항상 폴링).
-            (INT2 -> IO5 는 예비, 미사용)
-
-    config IIS3DWB_SPI_FREQ_HZ
-        int "SPI Clock Frequency (Hz)"
-        default 1000000
-        range 100000 10000000
-        help
-            SPI clock frequency in Hz.
-            Maximum supported: 10 MHz
-            Default: 1 MHz (conservative)
-
-    choice IIS3DWB_FULL_SCALE
-        prompt "Full Scale Selection"
-        default IIS3DWB_FS_4G
-        help
-            Select the accelerometer full-scale range.
-            Higher range allows measuring larger accelerations.
-
-        config IIS3DWB_FS_2G
-            bool "+/-2g"
-        config IIS3DWB_FS_4G
-            bool "+/-4g"
-        config IIS3DWB_FS_8G
-            bool "+/-8g"
-        config IIS3DWB_FS_16G
-            bool "+/-16g"
+        config STREAM_SERIAL_CHANNEL_USB_JTAG
+            bool "USB Serial/JTAG (ESP32-S3 내장 USB)"
+            help
+                보드의 USB 커넥터가 ESP32-S3 내장 USB(GPIO19/20)에 직결된 경우.
+                USB CDC 라 보드레이트가 형식적 값이며 26.6 kHz 까지 여유가 있다.
     endchoice
 
-    config IIS3DWB_FULL_SCALE
-        hex
-        default 0x00 if IIS3DWB_FS_2G
-        default 0x08 if IIS3DWB_FS_4G
-        default 0x0C if IIS3DWB_FS_8G
-        default 0x04 if IIS3DWB_FS_16G
-
-    choice IIS3DWB_BANDWIDTH
-        prompt "Low-Pass Filter Bandwidth"
-        default IIS3DWB_BW_ODR_DIV_4
+    config STREAM_SERIAL_UART_BAUD
+        int "UART0 streaming baud rate"
+        depends on STREAM_SERIAL_CHANNEL_UART0
+        default 921600
         help
-            Select the low-pass filter bandwidth.
-            ODR is fixed at 26.667 kHz.
+            시리얼 스트리밍 중에만 적용되는 UART0 보드레이트.
+            스트리밍 시작 시 이 값으로 올리고, 정지 시 콘솔 기본값으로 되돌린다.
 
-        config IIS3DWB_BW_ODR_DIV_4
-            bool "ODR/4 (~6.67 kHz)"
-        config IIS3DWB_BW_ODR_DIV_10
-            bool "ODR/10 (~2.67 kHz)"
-        config IIS3DWB_BW_ODR_DIV_20
-            bool "ODR/20 (~1.33 kHz)"
-        config IIS3DWB_BW_ODR_DIV_45
-            bool "ODR/45 (~593 Hz)"
-        config IIS3DWB_BW_ODR_DIV_100
-            bool "ODR/100 (~267 Hz)"
-        config IIS3DWB_BW_ODR_DIV_200
-            bool "ODR/200 (~133 Hz)"
-        config IIS3DWB_BW_ODR_DIV_400
-            bool "ODR/400 (~67 Hz)"
-        config IIS3DWB_BW_ODR_DIV_800
-            bool "ODR/800 (~33 Hz)"
-    endchoice
+            플래시·부팅로그는 항상 115200 이므로 esptool 동작에는 영향이 없다.
+            수신 프로그램(rpi-receiver/serial_receiver.py)의 --baud 와 반드시 같아야 한다.
 
-    config IIS3DWB_BANDWIDTH
-        int
-        default 0 if IIS3DWB_BW_ODR_DIV_4
-        default 1 if IIS3DWB_BW_ODR_DIV_10
-        default 2 if IIS3DWB_BW_ODR_DIV_20
-        default 3 if IIS3DWB_BW_ODR_DIV_45
-        default 4 if IIS3DWB_BW_ODR_DIV_100
-        default 5 if IIS3DWB_BW_ODR_DIV_200
-        default 6 if IIS3DWB_BW_ODR_DIV_400
-        default 7 if IIS3DWB_BW_ODR_DIV_800
+            브리지칩이 지원하는 상한을 넘기면 데이터가 깨진다. 보드에서 실측한
+            값을 쓸 것.
 
-    config IIS3DWB_READ_INTERVAL_MS
-        int "Sensor Read Interval (ms)"
-        range 10 60000
-        default 100
+    config STREAM_DIAG_INT_PIN
+        bool "INT 핀 전기 상태 진단 로그 (문제 추적용)"
+        default n
         help
-            Time interval between sensor readings in milliseconds.
-            Note: Sensor ODR is 26.667 kHz, but reading interval
-            can be set independently for monitoring purposes.
+            스트리밍 시작 시 INT1/INT2 핀에 내부 풀업·풀다운을 번갈아 걸어
+            레벨을 읽고, 신호가 오지 않는 것인지(단선/미구동) LOW 로 능동
+            구동되는 것인지(극성 반전) 판정해 로그로 남긴다.
+
+            센서가 watermark 도달(FIFO_STATUS2 의 WTM=1)인데도 ESP32 핀이
+            LOW 로 읽히는 상황을 가를 때 쓴다. 평소에는 꺼 둔다.
+
+            대조군으로 함께 읽는 INT2 핀은 CONFIG_IIS3DWB_INT2_GPIO 를 쓴다
+            (핀 정의는 components/iis3dwb/Kconfig 한 곳에만 둔다).
 
 endmenu
+
+# IIS3DWB 센서 핀·전체스케일·대역폭 설정은 components/iis3dwb/Kconfig 로 옮겼다.
+# 전용 보드 검사 펌웨어(boardcheck/)와 핀맵을 한 곳에서 공유하기 위함이다.
+# menuconfig 에서는 Component config → IIS3DWB Vibration Sensor Configuration.

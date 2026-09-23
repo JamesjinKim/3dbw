@@ -1,0 +1,36 @@
+# 배포용(고객 출하) 빌드 오버레이
+#
+# 사용법 — 개발 빌드(build/, sdkconfig)를 건드리지 않고 별도 디렉터리로 빌드한다:
+#
+#   idf.py -B build-deploy \
+#     -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.deploy" \
+#     -D SDKCONFIG=build-deploy/sdkconfig build
+#
+# (tools/build-deploy.sh 가 이 명령을 감싼다 — 릴리스는 손으로 치지 말 것)
+#
+# 왜 필요한가:
+#   개발 빌드는 CONFIG_WIFI_PREFER_NVS=n 이라 펌웨어가 NVS 의 WiFi 값을 **무시**하고
+#   컴파일 시점의 Kconfig 값으로만 접속한다(main.c 의 "Kconfig (개발 빌드 — NVS 무시)").
+#   배포형은 사용자가 GUI 로 입력한 WiFi 가 실제로 반영되어야 하므로 =y 가 필수다.
+#   main.c 주석도 =y 를 "고객 배포용"으로 명시한다.
+
+# WiFi 자격증명을 NVS(devcfg) 에서 우선 읽는다.
+# NVS 가 비어 있으면 아래 Kconfig 값으로 폴백하므로, 미설정 보드도 안전하게 부팅한다.
+CONFIG_WIFI_PREFER_NVS=y
+
+# 폴백 자격증명 — 배포 이미지에 실제 사업장 WiFi 가 들어가면 안 된다.
+# 이 값으로는 접속에 실패하는 것이 정상이며, 그때 부팅 로그에
+# "WiFi 자격증명 출처: Kconfig 기본값 (NVS 미설정)" 이 찍혀 미설정 상태임이 드러난다.
+CONFIG_WIFI_SSID="unconfigured"
+CONFIG_WIFI_PASSWORD=""
+
+# ---- 시리얼(USB 직결) 스트리밍 채널 ----
+# 이 보드의 USB 커넥터는 Cypress USB-UART 브리지(04b4:0003)로 이어진다.
+# lsusb 에 Espressif(303a) 가 나타나지 않는 것으로 확인했다 (착탈 테스트).
+# 따라서 내장 USB(USB Serial/JTAG)가 아니라 UART0 로 내보내야 한다.
+CONFIG_STREAM_SERIAL_CHANNEL_UART0=y
+
+# 브리지가 2 Mbps 까지 링크를 성립시키는 것을 실측했다(115200~2000000 전부 성공).
+# 26.6 kHz(162 KB/s)까지 커버하려면 2 Mbps 가 필요하다.
+# 실스트리밍에서 dropped 가 발생하면 낮출 것.
+CONFIG_STREAM_SERIAL_UART_BAUD=2000000
