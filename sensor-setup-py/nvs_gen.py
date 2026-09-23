@@ -144,12 +144,18 @@ class NvsPage:
 
 def generate_full_nvs(namespace, ssid, password, srv_ip, srv_port,
                       stream_rate, transport, read_mode,
-                      partition_size=0x6000):
+                      partition_size=0x6000, full_scale_g=None):
     """WiFi + 서버 스트리밍 설정을 담은 NVS 파티션 바이너리 생성.
 
     엔트리 순서(펌웨어/Rust툴과 동일):
       namespace → wifi_ssid → wifi_pass → srv_ip → srv_port
-      → stream_rate → transport → read_mode
+      → stream_rate → transport → read_mode [→ full_scale_g]
+
+    `full_scale_g` (2/4/8/16):
+      펌웨어 v2 가 읽는 측정범위. 패킷 헤더에 실려 수신 측 mg 환산에 쓰인다.
+      None 이면 엔트리를 만들지 않아 기존(Rust 설정툴) 출력과 byte-exact 하게
+      유지된다 — 이때 펌웨어는 ±4g 기본값을 적용한다(config_manager.c).
+      펌웨어는 키로 조회하므로 엔트리를 맨 뒤에 붙여도 동작에 영향이 없다.
     """
     if partition_size < PAGE_SIZE * 2:
         raise ValueError("NVS 파티션 크기가 너무 작습니다 (최소 8KB)")
@@ -161,6 +167,10 @@ def generate_full_nvs(namespace, ssid, password, srv_ip, srv_port,
         raise ValueError("비밀번호가 너무 깁니다 (최대 64)")
     if not srv_ip or len(srv_ip) > 15:
         raise ValueError("서버 IP 형식이 올바르지 않습니다")
+    if transport not in (0, 1, 2):
+        raise ValueError("transport 는 0(UDP)/1(TCP)/2(USB시리얼) 중 하나여야 합니다")
+    if full_scale_g is not None and full_scale_g not in (2, 4, 8, 16):
+        raise ValueError("full_scale_g 는 2/4/8/16 중 하나여야 합니다")
 
     page = NvsPage()
     page.add_namespace(namespace, NS_INDEX)
@@ -171,6 +181,8 @@ def generate_full_nvs(namespace, ssid, password, srv_ip, srv_port,
     page.add_u8("stream_rate", stream_rate)
     page.add_u8("transport", transport)
     page.add_u8("read_mode", read_mode)
+    if full_scale_g is not None:
+        page.add_u8("full_scale_g", full_scale_g)
 
     first = page.serialize()
     out = bytearray(b"\xff" * partition_size)
@@ -187,4 +199,33 @@ if __name__ == "__main__":
     assert len(b) == 0x6000, "파티션 크기 불일치"
     assert b[0:4] == bytes([0xFE, 0xFF, 0xFF, 0xFF]), "페이지 state 불일치"
     assert b[8] == 0xFE, "NVS 버전(V2) 불일치"
+
+    # full_scale_g 생략 시 기존 출력과 완전히 동일해야 한다 (Rust 툴과의 호환)
+    b_none = generate_full_nvs(
+        "devcfg", "example2.4G", "example1234", "192.168.0.37",
+        9000, 1, 0, 1, 0x6000, full_scale_g=None,
+    )
+    assert b_none == b, "full_scale_g=None 인데 출력이 달라졌다"
+
+    # full_scale_g 를 주면 엔트리가 하나 늘어난다
+    b_fs = generate_full_nvs(
+        "devcfg", "example2.4G", "example1234", "192.168.0.37",
+        9000, 1, 2, 1, 0x6000, full_scale_g=16,
+    )
+    assert len(b_fs) == 0x6000, "파티션 크기 불일치(fs)"
+    assert b_fs != b, "full_scale_g 를 줬는데 출력이 같다"
+
+    # 잘못된 값은 거부해야 한다
+    for bad in (dict(transport=3), dict(full_scale_g=5)):
+        kw = dict(stream_rate=1, transport=0, read_mode=1, partition_size=0x6000)
+        kw.update(bad)
+        try:
+            generate_full_nvs("devcfg", "s", "p", "192.168.0.1", 9000, **kw)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("잘못된 값을 거부하지 않았다: %r" % bad)
+
     print("✅ nvs_gen 자가 점검 통과: %d 바이트, V2 ACTIVE 페이지" % len(b))
+    print("   · full_scale_g 생략 시 기존 출력과 byte-exact 동일")
+    print("   · full_scale_g / transport 지정 및 값 검증 동작 확인")
