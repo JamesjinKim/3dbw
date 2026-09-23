@@ -463,18 +463,33 @@ esp_err_t iis3dwb_fifo_disable(iis3dwb_handle_t *handle)
     return iis3dwb_write_register(handle, IIS3DWB_REG_FIFO_CTRL4, IIS3DWB_FIFO_BYPASS);
 }
 
-esp_err_t iis3dwb_fifo_count(iis3dwb_handle_t *handle, uint16_t *count)
+esp_err_t iis3dwb_fifo_status(iis3dwb_handle_t *handle, uint16_t *count,
+                              uint8_t *status)
 {
-    if (!handle || !handle->initialized || !count) {
+    if (!handle || !handle->initialized) {
         return ESP_ERR_INVALID_ARG;
     }
     uint8_t st[2];
-    /* FIFO_STATUS1(0x3A)=DIFF[7:0], FIFO_STATUS2(0x3B) bit[1:0]=DIFF[9:8] */
+    /* FIFO_STATUS1(0x3A)=DIFF[7:0], FIFO_STATUS2(0x3B) bit[1:0]=DIFF[9:8],
+     * bit7=WTM_IA, bit6=OVR_IA, bit5=FULL_IA */
     esp_err_t ret = iis3dwb_read_registers(handle, IIS3DWB_REG_FIFO_STATUS1, st, 2);
     if (ret == ESP_OK) {
-        *count = ((uint16_t)(st[1] & 0x03) << 8) | st[0];
+        if (count) {
+            *count = ((uint16_t)(st[1] & 0x03) << 8) | st[0];
+        }
+        if (status) {
+            *status = st[1];
+        }
     }
     return ret;
+}
+
+esp_err_t iis3dwb_fifo_count(iis3dwb_handle_t *handle, uint16_t *count)
+{
+    if (!count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return iis3dwb_fifo_status(handle, count, NULL);
 }
 
 esp_err_t iis3dwb_read_fifo(iis3dwb_handle_t *handle, iis3dwb_raw_data_t *raw,

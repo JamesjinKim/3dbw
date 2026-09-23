@@ -1,0 +1,145 @@
+menu "IIS3DWB Vibration Sensor Configuration"
+
+# 이 메뉴는 원래 main/Kconfig.projbuild 에 있었다. boardcheck/ (전용 보드 검사
+# 펌웨어) 가 같은 핀맵으로 검사해야 하는데, 두 프로젝트가 각자 핀 번호를 들고
+# 있으면 하드웨어 변경 시 한쪽만 고쳐져 "검사는 통과인데 실물은 다른 핀" 이라는
+# 최악의 상태가 된다. 컴포넌트 Kconfig 로 옮겨 두 프로젝트가 같은 정의를
+# 자동으로 공유하게 했다. **핀 변경은 이 파일 한 곳에서만 한다.**
+
+    config IIS3DWB_SPI_HOST
+        int "SPI Host (2=SPI2, 3=SPI3)"
+        default 2
+        range 2 3
+        help
+            SPI host number. Use 2 for SPI2_HOST or 3 for SPI3_HOST.
+            Default: 2 (SPI2_HOST)
+
+    config IIS3DWB_SPI_MOSI_GPIO
+        int "SPI MOSI GPIO Number"
+        default 13
+        help
+            GPIO number for SPI MOSI (Master Out Slave In).
+            This connects to SDA/SDI on IIS3DWB.
+
+    config IIS3DWB_SPI_MISO_GPIO
+        int "SPI MISO GPIO Number"
+        default 12
+        help
+            GPIO number for SPI MISO (Master In Slave Out).
+            This connects to SDO on IIS3DWB.
+
+    config IIS3DWB_SPI_SCLK_GPIO
+        int "SPI SCLK GPIO Number"
+        default 14
+        help
+            GPIO number for SPI SCLK (Serial Clock).
+            This connects to SCL on IIS3DWB.
+
+    config IIS3DWB_SPI_CS_GPIO
+        int "SPI CS GPIO Number"
+        default 15
+        help
+            GPIO number for SPI CS (Chip Select).
+            This connects to CS on IIS3DWB.
+
+    config IIS3DWB_INT1_GPIO
+        int "IIS3DWB INT1 GPIO (FIFO watermark interrupt)"
+        default 4
+        range -1 48
+        help
+            ESP32-S3 GPIO connected to IIS3DWB INT1 pin.
+            HW pinmap (담당자 확정): INT1 -> IO4. (실기기 검증 완료)
+            실제 인터럽트 사용 여부는 사용자 설정(read_mode, NVS)이 결정:
+            read_mode=1(인터럽트) 선택 시 이 핀으로 watermark INT 수신 → 26.6kHz,
+            read_mode=0(폴링/자동) 또는 INT 미수신 시 효율 폴링으로 자동 동작.
+            -1 로 두면 핀 자체를 사용하지 않음 (항상 폴링).
+
+    config IIS3DWB_INT2_GPIO
+        int "IIS3DWB INT2 GPIO (예비 / 진단 대조군, -1=없음)"
+        default 5
+        range -1 48
+        help
+            INT1 과 같은 보드 간 커넥터를 지나는 INT2 핀. 현재 펌웨어는
+            watermark 를 INT2 로 라우팅하지 않으므로 기능상 미사용이지만,
+            핀진단에서 대조군으로 읽으면 "커넥터 전체 문제" 와 "INT1 단독
+            문제" 가 구분된다.
+
+    config IIS3DWB_SPI_FREQ_HZ
+        int "SPI Clock Frequency (Hz)"
+        default 1000000
+        range 100000 10000000
+        help
+            SPI clock frequency in Hz.
+            Maximum supported: 10 MHz
+            Default: 1 MHz (conservative)
+
+    choice IIS3DWB_FULL_SCALE
+        prompt "Full Scale Selection"
+        default IIS3DWB_FS_4G
+        help
+            Select the accelerometer full-scale range.
+            Higher range allows measuring larger accelerations.
+
+        config IIS3DWB_FS_2G
+            bool "+/-2g"
+        config IIS3DWB_FS_4G
+            bool "+/-4g"
+        config IIS3DWB_FS_8G
+            bool "+/-8g"
+        config IIS3DWB_FS_16G
+            bool "+/-16g"
+    endchoice
+
+    config IIS3DWB_FULL_SCALE
+        hex
+        default 0x00 if IIS3DWB_FS_2G
+        default 0x08 if IIS3DWB_FS_4G
+        default 0x0C if IIS3DWB_FS_8G
+        default 0x04 if IIS3DWB_FS_16G
+
+    choice IIS3DWB_BANDWIDTH
+        prompt "Low-Pass Filter Bandwidth"
+        default IIS3DWB_BW_ODR_DIV_4
+        help
+            Select the low-pass filter bandwidth.
+            ODR is fixed at 26.667 kHz.
+
+        config IIS3DWB_BW_ODR_DIV_4
+            bool "ODR/4 (~6.67 kHz)"
+        config IIS3DWB_BW_ODR_DIV_10
+            bool "ODR/10 (~2.67 kHz)"
+        config IIS3DWB_BW_ODR_DIV_20
+            bool "ODR/20 (~1.33 kHz)"
+        config IIS3DWB_BW_ODR_DIV_45
+            bool "ODR/45 (~593 Hz)"
+        config IIS3DWB_BW_ODR_DIV_100
+            bool "ODR/100 (~267 Hz)"
+        config IIS3DWB_BW_ODR_DIV_200
+            bool "ODR/200 (~133 Hz)"
+        config IIS3DWB_BW_ODR_DIV_400
+            bool "ODR/400 (~67 Hz)"
+        config IIS3DWB_BW_ODR_DIV_800
+            bool "ODR/800 (~33 Hz)"
+    endchoice
+
+    config IIS3DWB_BANDWIDTH
+        int
+        default 0 if IIS3DWB_BW_ODR_DIV_4
+        default 1 if IIS3DWB_BW_ODR_DIV_10
+        default 2 if IIS3DWB_BW_ODR_DIV_20
+        default 3 if IIS3DWB_BW_ODR_DIV_45
+        default 4 if IIS3DWB_BW_ODR_DIV_100
+        default 5 if IIS3DWB_BW_ODR_DIV_200
+        default 6 if IIS3DWB_BW_ODR_DIV_400
+        default 7 if IIS3DWB_BW_ODR_DIV_800
+
+    config IIS3DWB_READ_INTERVAL_MS
+        int "Sensor Read Interval (ms)"
+        range 10 60000
+        default 100
+        help
+            Time interval between sensor readings in milliseconds.
+            Note: Sensor ODR is 26.667 kHz, but reading interval
+            can be set independently for monitoring purposes.
+
+endmenu

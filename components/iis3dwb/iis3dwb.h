@@ -368,6 +368,26 @@ esp_err_t iis3dwb_fifo_disable(iis3dwb_handle_t *handle);
  */
 esp_err_t iis3dwb_fifo_count(iis3dwb_handle_t *handle, uint16_t *count);
 
+/* FIFO_STATUS2(0x3B) 상태 비트 */
+#define IIS3DWB_FIFO_STATUS_WTM  (1 << 7)  /**< FIFO_WTM_IA: watermark 도달 */
+#define IIS3DWB_FIFO_STATUS_OVR  (1 << 6)  /**< FIFO_OVR_IA: 오버런(오래된 샘플 유실) */
+#define IIS3DWB_FIFO_STATUS_FULL (1 << 5)  /**< FIFO_FULL_IA: 가득 찼음 */
+
+/**
+ * @brief FIFO 샘플 수 + 상태 비트를 한 번에 읽는다
+ *
+ * `iis3dwb_fifo_count()` 는 DIFF 개수만 돌려주고 FIFO_STATUS2 의 상태 비트를
+ * 버린다. 그런데 FIFO 는 Continuous 모드라 가득 차면 **오래된 샘플을 조용히
+ * 덮어쓴다** — 이 손실은 링버퍼 통계(dropped)에 잡히지 않으므로, OVR 비트를
+ * 읽지 않으면 유실을 알 방법이 없다. 진단·통계용으로 이 함수를 쓴다.
+ *
+ * @param handle 센서 핸들
+ * @param count  [out] 쌓인 샘플(워드) 수. NULL 허용
+ * @param status [out] FIFO_STATUS2 원본 바이트. NULL 허용
+ */
+esp_err_t iis3dwb_fifo_status(iis3dwb_handle_t *handle, uint16_t *count,
+                              uint8_t *status);
+
 /**
  * @brief FIFO에서 최대 max_samples 개를 버스트로 읽어 raw[] 채움
  *
