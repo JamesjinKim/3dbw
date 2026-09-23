@@ -1,0 +1,63 @@
+menu "Board Check"
+
+# 핀맵(SPI·INT1·INT2)은 여기 없다 — components/iis3dwb/Kconfig 에 있다.
+# 운영 펌웨어와 같은 정의를 공유해야 검사가 의미를 갖기 때문이다.
+
+    config BOARDCHECK_INT_SECONDS
+        int "INT 발생률 측정 시간 (초)"
+        default 10
+        range 2 60
+        help
+            FIFO watermark 인터럽트를 몇 초 동안 세어 발생률을 낼지.
+            10초면 판정에 충분하고 전체 검사가 20초 안에 끝난다.
+
+    config BOARDCHECK_INT_RATE_MIN
+        int "INT 발생률 하한 (회/초)"
+        default 300
+        help
+            정상 기대값은 ODR/watermark = 26667/64 ≒ 417 회/초.
+            드레인 여유분 때문에 실측은 400~410 근처로 나온다.
+            하한을 너무 올리면 정상 보드가 FAIL 로 잡힌다.
+
+    config BOARDCHECK_INT_RATE_MAX
+        int "INT 발생률 상한 (회/초)"
+        default 600
+        help
+            이론 상한(417)을 크게 넘으면 핀이 노이즈로 떨고 있다는 뜻이다.
+
+    config BOARDCHECK_ODR_MIN
+        int "FIFO 축적 속도 하한 (Hz)"
+        default 24000
+        help
+            FIFO 가 쌓이는 속도로 ODR 을 역산해 검사한다.
+            사양은 26667 Hz. 하한 24000 은 측정 오차를 고려한 값이다.
+
+    config BOARDCHECK_LED
+        bool "판정 결과를 RGB LED 로 표시"
+        default y
+        help
+            검사 중 파랑, PASS 초록, FAIL 빨강. 터미널 없이 보드만 보고
+            합·부를 가릴 수 있어 검사대에서 유용하다.
+            LED 가 없는 보드에서도 켜 두어 해롭지 않다 (핀만 구동).
+
+    config BOARDCHECK_LED_RED_GPIO
+        int "LED 빨강 GPIO"
+        depends on BOARDCHECK_LED
+        default 8
+
+    config BOARDCHECK_LED_GREEN_GPIO
+        int "LED 초록 GPIO"
+        depends on BOARDCHECK_LED
+        default 3
+
+    config BOARDCHECK_LED_BLUE_GPIO
+        int "LED 파랑 GPIO"
+        depends on BOARDCHECK_LED
+        default 46
+
+    config BOARDCHECK_LED_ACTIVE_LOW
+        bool "LED 는 GPIO LOW 일 때 켜짐 (공통 애노드)"
+        depends on BOARDCHECK_LED
+        default y
+
+endmenu

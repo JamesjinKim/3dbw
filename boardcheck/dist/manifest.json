@@ -1,0 +1,43 @@
+{
+  "kind": "iis3dwb-boardcheck",
+  "built_at": "2026-09-23T08:29:15+09:00",
+  "chip": "esp32s3",
+  "write_flash_args": [
+    "--flash_mode",
+    "dio",
+    "--flash_size",
+    "2MB",
+    "--flash_freq",
+    "80m"
+  ],
+  "pinmap": {
+    "IIS3DWB_SPI_HOST": 2,
+    "IIS3DWB_SPI_MOSI_GPIO": 13,
+    "IIS3DWB_SPI_MISO_GPIO": 12,
+    "IIS3DWB_SPI_SCLK_GPIO": 14,
+    "IIS3DWB_SPI_CS_GPIO": 15,
+    "IIS3DWB_INT1_GPIO": 4,
+    "IIS3DWB_INT2_GPIO": 5,
+    "IIS3DWB_SPI_FREQ_HZ": 8000000
+  },
+  "images": [
+    {
+      "offset": "0x10000",
+      "file": "iis3dwb_boardcheck.bin",
+      "size": 233792,
+      "sha256": "b98720852a09c60a93258b6e7ca6286cf42ac8a442788ef0ee1d184f7d319ef8"
+    },
+    {
+      "offset": "0x8000",
+      "file": "partition-table.bin",
+      "size": 3072,
+      "sha256": "7f00b6c042a89b15b0cac534f82ed988caf29278ff5700b0c511eb1b5bb7c820"
+    },
+    {
+      "offset": "0x0",
+      "file": "bootloader.bin",
+      "size": 20928,
+      "sha256": "471e85da012094aabc0d0320391cd36198598bed8c6b7c5a567f28da56358320"
+    }
+  ]
+}

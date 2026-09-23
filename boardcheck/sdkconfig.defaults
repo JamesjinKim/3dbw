@@ -1,0 +1,23 @@
+# boardcheck 펌웨어 빌드 기본값
+#
+# 상위 프로젝트의 sdkconfig.defaults 와 값이 겹치는 항목은 **같은 값**으로 맞춘다.
+# 검사 조건이 실제 동작 펌웨어와 달라지면 검사의 의미가 없다.
+
+# 타겟 칩 고정 (없으면 idf.py 가 esp32 로 빌드를 시작한다)
+CONFIG_IDF_TARGET="esp32s3"
+
+# 콘솔: UART0(115200) 우선 + USB Serial/JTAG 보조.
+# 보드의 USB 커넥터가 브리지칩이든 내장 USB든 어느 쪽이어도 로그가 나온다.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+
+# 틱 1000Hz — 26.6kHz FIFO 를 1ms 해상도로 비운다 (상위 프로젝트와 동일)
+CONFIG_FREERTOS_HZ=1000
+
+# SPI 8MHz — FIFO 7B×26.6kHz=1.5Mbps 를 처리하려면 필요 (상위 프로젝트와 동일)
+CONFIG_IIS3DWB_SPI_FREQ_HZ=8000000
+
+# 검사는 파티션을 쓰지 않지만, 상위 펌웨어와 **같은 파티션 표**를 써야
+# boardcheck 를 구운 뒤 운영 펌웨어를 다시 구워도 NVS(0x9000) 가 살아남는다.
+CONFIG_PARTITION_TABLE_SINGLE_APP=y
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
