@@ -22,7 +22,7 @@ if [ "${1:-}" = "clean" ]; then
   rm -rf "$BUILD_DIR"
 fi
 
-# ---- ESP-IDF 환경 활성화 (run.sh 와 동일한 탐색 순서) ----
+# ---- ESP-IDF 환경 활성화 (dev-flash.sh 와 동일한 탐색 순서) ----
 find_idf_export() {
   local c
   for c in "${IDF_EXPORT:-}" \

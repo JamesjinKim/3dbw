@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 #
-# run.sh — IIS3DWB 펌웨어 빌드 → 플래시 → 모니터 자동 실행 (라즈베리파이 / Linux)
+# dev-flash.sh — [개발용] IIS3DWB 펌웨어 빌드 → 플래시 → 모니터 (라즈베리파이 / Linux)
+#
+# ⚠ 개발 전용이다. 이것으로 구운 보드는 WiFi 를 NVS 가 아니라 menuconfig 값으로 쓰고
+#   (CONFIG_WIFI_PREFER_NVS=n) 시리얼 속도도 배포판과 다르다 — 출하·현장용으로 쓰지 말 것.
+#   배포용은 tools/build-deploy.sh → tools/make-deploy-package.sh.
+#   (예전 이름 run.sh — 배포 패키지의 run.sh 와 이름이 같아 헷갈려 2026-09-27 에 바꿨다)
 #
 # 하는 일:
 #   1) ESP-IDF 환경 활성화 (export.sh)
@@ -23,9 +28,9 @@
 #   자동으로 제외한다.
 #
 # 사용법:
-#   ./run.sh                    # 연결된 포트 자동 감지
-#   ./run.sh /dev/ttyACM0       # 포트를 직접 지정 (자동 감지 건너뜀)
-#   IDF_EXPORT=~/esp/other/esp-idf/export.sh ./run.sh    # ESP-IDF 경로 지정
+#   ./dev-flash.sh                    # 연결된 포트 자동 감지
+#   ./dev-flash.sh /dev/ttyACM0       # 포트를 직접 지정 (자동 감지 건너뜀)
+#   IDF_EXPORT=~/esp/other/esp-idf/export.sh ./dev-flash.sh    # ESP-IDF 경로 지정
 #
 # 종료: 모니터 화면에서 Ctrl + ]
 #
@@ -68,7 +73,7 @@ if [ -z "$PORT" ]; then
     echo "   · USB 케이블이 '데이터 전송용'인지 확인하세요 (충전 전용 케이블 불가)" >&2
     echo "   · 보드의 USB 포트를 바꿔 꽂아보세요 (USB / UART 두 개인 보드 있음)" >&2
     echo "   · 'dmesg | tail' 로 USB 인식 여부를 확인할 수 있습니다" >&2
-    echo "   · 포트를 직접 지정하려면: ./run.sh /dev/ttyACM0" >&2
+    echo "   · 포트를 직접 지정하려면: ./dev-flash.sh /dev/ttyACM0" >&2
     exit 1
   elif [ "${#FOUND_PORTS[@]}" -eq 1 ]; then
     PORT="${FOUND_PORTS[0]}"
@@ -128,7 +133,7 @@ find_idf_export() {
 if ! IDF_EXPORT_SH="$(find_idf_export)"; then
   echo "❌ ESP-IDF export.sh 를 찾을 수 없습니다." >&2
   echo "   설치가 안 되어 있다면:  ./setup-rpi.sh" >&2
-  echo "   경로를 직접 지정하려면: IDF_EXPORT=~/esp/.../export.sh ./run.sh" >&2
+  echo "   경로를 직접 지정하려면: IDF_EXPORT=~/esp/.../export.sh ./dev-flash.sh" >&2
   exit 1
 fi
 echo "▶ ESP-IDF 환경 활성화: $IDF_EXPORT_SH"
@@ -162,7 +167,7 @@ fi
 if [ ! -e "$PORT" ]; then
   echo "⚠ 포트 $PORT 가 보이지 않습니다. 현재 포트 목록:" >&2
   ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || true
-  echo "   케이블 연결을 확인하거나 './run.sh <포트>' 로 지정하세요." >&2
+  echo "   케이블 연결을 확인하거나 './dev-flash.sh <포트>' 로 지정하세요." >&2
   exit 1
 fi
 echo "   사용 포트 : $PORT"

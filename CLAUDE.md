@@ -49,18 +49,28 @@ ESP32-S3 + IIS3DWB 초광대역 진동센서로 진동 데이터를 고속 수�
   - `Kconfig.projbuild`: 프로젝트 설정 메뉴 정의 (WiFi, SPI 핀, 센서 설정)
   - `CMakeLists.txt`: 메인 컴포넌트 빌드 설정
 - **sdkconfig.defaults**: 기본 설정 · **sdkconfig.defaults.deploy**: 배포 빌드 오버레이
-- **tools/**: 배포 빌드·패키징·USB 복구 스크립트 · **deploy/**: udev 규칙
+- **tools/**: 배포 빌드·패키징·USB 복구 스크립트 · **deploy/**: 두 패키지 공용 `run.sh`(진입점) ·
+  `install.sh`(오프라인 설치) · `70-iis3dwb.rules`(udev)
+- **vendor/**: 폐쇄망 배포용 파이썬 라이브러리 원본 (esptool sdist · pyserial · intelhex, `SHA256SUMS`)
 - **docs/**: 패킷 규격 · 시리얼 전송 설계 · FIFO 인터럽트 · 데이터시트
 - **rpi-collector/**: 공정 수집기 (배포물 ③)
   - `iis3dwb_packet.py`: 패킷 파서 (v1 16B / v2 18B 헤더) — **정본은 여기 하나**
   - `session.py`: 채널 상태머신. 진동센서 1대 ↔ 포토센서 1개가 독립 동작
   - `sensor_link.py` / `writer.py`: 읽기·쓰기 스레드 분리 (조용한 유실 방지)
-  - `trigger.py`: 포토센서 엣지 인터럽트 (lgpio, DIN1=GPIO5 / DIN2=GPIO17)
+  - `trigger.py`: 포토센서 엣지 인터럽트 (DIN1=GPIO5 / DIN2=GPIO17)
+  - `gpio_cdev.py`: 커널 GPIO v2 uAPI 를 순수 파이썬 ioctl 로 — trigger 의 기본 백엔드.
+    lgpio 는 커널이 v2 를 모를 때(5.10 미만)만 쓰는 예비
   - `slots.py`: USB 슬롯 ↔ 센서 이름 + **udev 고정 장치 이름**(`/dev/iis3dwb1`)
-  - `collect_cli.py` / `gui_preview.py`: CLI·GUI 진입점
+  - **공식 명칭: "SHT 진동센서 수집"** (창 제목·바탕화면 아이콘·도움말)
+  - `collector_gui.py`: **수집기 화면(GUI)** — `bash run.sh` 기본. 센서 칸마다 자기 포토센서
+    실시간 상태·DIN 선택·수동 시작/중지·진행률. 공통 설정(수집 시간 등)을 화면에서 바꾼다
+  - `settings.py`: 공통 설정 저장(`settings.json`) — **GUI 와 글자 화면이 같은 파일**을 쓴다
+    (Lite 에서 글자 화면으로 돌아도 GUI 에서 정한 수집 시간이 적용되게)
+  - `collect_cli.py`: 글자 화면 — 화면이 없는 RPi(Lite·SSH)에서 run.sh 가 대신 띄운다
   - `udp_receiver.py`: WiFi(UDP) 수신 → CSV
   - `bin_to_csv.py`: 바이너리 → CSV · `help.html`: 오프라인 사용설명서
-  - `selftest.py`: 센서·GPIO 없이 도는 자체 검증 12그룹
+  - `vendor_path.py`: 배포 패키지의 `vendor/`(pyserial)를 import 경로 앞에 넣는다
+  - `selftest.py`: 센서·GPIO 없이 도는 자체 검증 (실제 USB 상태와 무관해야 한다)
 - **boardcheck/**: 보드 수입검사 전용 펌웨어 + 실행기 (**독립 ESP-IDF 프로젝트**)
   - 하드웨어를 변경했거나 새 보드를 받았을 때 소프트웨어 작업 전에 먼저 돌리는 관문
   - `./run.sh` 한 줄로 굽고 검사해 PASS/FAIL 판정 (종료코드 0/1/2/3)
@@ -69,6 +79,9 @@ ESP32-S3 + IIS3DWB 초광대역 진동센서로 진동 데이터를 고속 수�
   - 상위 프로젝트와 `components/iis3dwb` 만 공유하고 나머지는 빌드하지 않는다
     (`set(COMPONENTS main)`) — 스트리밍 코드가 바뀌어도 검사 결과가 흔들리지 않는다
 - **sensor-setup-py/**: 센서 설정 주입 GUI (tkinter, 크로스플랫폼 — **라즈베리파이 권장**)
+  - **공식 명칭: "SHT 진동센서 설정"** (창 제목·화면 머리글·바탕화면 아이콘·도움말. 예전 이름
+    "IIS3DWB 센서 설정 툴" 은 쓰지 않는다). 화면 용어: **진동센서 목록**(보드 목록 그룹),
+    **MAC 주소 확인**(MAC 읽기 버튼). 설정툴 화면에는 수집기 명령을 넣지 않는다.
 - **setup-rpi.sh**: 라즈베리파이 환경 일괄 구성 (ESP-IDF + 의존 패키지 + 권한)
 
 ## 주요 명령어
@@ -278,8 +291,12 @@ WiFi 및 디바이스 정보가 터미널에 색상으로 강조 표시됩니다
 
 **복구**: USB 장치 레벨 리셋 (USBDEVFS_RESET)
 ```bash
-./tools/usb-recover.sh          # 자동으로 브리지를 찾아 리셋
+./tools/usb-recover.sh                 # 브리지가 1대일 때 — 찾아서 리셋
+./tools/usb-recover.sh /dev/iis3dwb2   # 여러 대일 때 — 멈춘 포트를 지정
 ```
+같은 기종 브리지가 2대면 VID:PID 로 구분할 수 없어, 포트를 지정하지 않으면 거부한다
+(예전에는 첫 번째를 말없이 리셋해 멀쩡한 센서가 리셋됐다). 설정툴 GUI 는
+`sensor-setup-py/usb_reset.py` 로 포트 기준 리셋을 한다.
 
 **재발 방지**: `/etc/udev/rules.d/99-iis3dwb-no-modemmanager.rules` 로 ModemManager 가
 이 포트를 무시하게 한다 (`ID_MM_DEVICE_IGNORE=1`). 새 라즈베리파이에서는
@@ -313,9 +330,45 @@ UART0 는 실제 UART 라 보드레이트가 속도를 직접 제한한다. 26.6
 |---|---|---|
 | `boardcheck/` | 보드 진단 — 새 보드·하드웨어 변경 시 **가장 먼저** | ✗ (dist/ 커밋됨) |
 | `sensor-setup-py/` | 펌웨어 굽기 + 설정 주입 | ✗ (패키지의 firmware/ 사용) |
-| `rpi-collector/` | 현장 RPi 에서 데이터 수집 | ✗ |
+| `rpi-collector/` | 현장 RPi 에서 데이터 수집 | ✗ (`tools/make-collector-package.sh`) |
 
-**개발용 `./run.sh` 로 구운 펌웨어를 출하하지 말 것.** 개발 빌드는
+배포 폴더도 나눈다 — 설정툴 `dist/`, 수집기 `dist-collector/` (둘 다 git 무시). 각 폴더를
+통째로 zip 해 사용자에게 주고(`SHT진동센서설정-<버전>.zip` / `SHT진동센서수집-<버전>.zip`,
+zip 도 git 무시), 폴더에는 README.txt + 프로그램 폴더만 둔다. **이름에 `test` 를 넣지 않는다.**
+
+### 폐쇄망 배포 (현장은 인터넷이 안 된다)
+
+현장 RPi 는 폐쇄망이고 OS 버전·32/64비트·Desktop/Lite 여부를 모른다. 그래서 두 패키지는
+**apt / pip 를 전혀 쓰지 않는다.**
+- 순수 파이썬 라이브러리는 패키지의 `vendor/` 에 소스째 넣는다. 원본은 저장소의
+  `vendor/`(해시 고정)이고 `tools/vendor_extract.py` 가 꺼낸다. 설정툴은 esptool·
+  pyserial·intelhex, 수집기는 pyserial. esptool 은 PyPI 가 sdist 만 배포해 sdist 에서
+  꺼낸다(piwheels 휠은 해시가 달라 쓰지 않는다). 패키지의 esptool 이 시스템 것보다 우선.
+- **작업자가 아는 명령은 `bash run.sh` 하나다** (두 패키지 모두, 폴더는 분리).
+  `deploy/run.sh` 한 벌을 두 패키지가 같이 쓰고, 들어 있는 파일로 어느 쪽인지 가른다.
+  매번 `install.sh --check` → 빠진 것만 설치(sudo) → 실행. 수집기는 인자 없이 `--auto`,
+  나머지 인자는 `collect_cli.py` 로, `slots`·`udp`·`help` 는 하위 명령. 설정툴은
+  바탕화면 아이콘을 만든다(마지막 실행 폴더를 가리킴). `./run.sh` 대신 `bash run.sh`
+  로 안내한다 — FAT USB 메모리로 옮기면 실행권한이 사라진다.
+- `install.sh --check` 종료코드: 0 정상 / 1 설치로 못 고침(tkinter·python·손상) /
+  3 설치하면 고쳐짐. run.sh 가 이것으로 갈린다.
+- udev 규칙은 **`70-iis3dwb.rules`** 이고 `TAG+="uaccess"` 로 데스크톱 사용자에게 즉시
+  권한을 준다 → 그룹 추가 후 재로그인이 필요 없다 (SSH 는 여전히 그룹·재접속).
+  **번호가 73(seat-late) 보다 작아야** uaccess 가 먹는다. 0.0.6 까지 쓰던
+  `99-iis3dwb.rules` 에서는 무시됐는데, 개발 RPi 는 apt 의 esptool·openocd 규칙이 같은
+  ACL 을 붙여 줘서 드러나지 않았다 — 현장 RPi 에는 그 패키지가 없다. install.sh 가
+  예전 99 파일을 지운다.
+- 패키징 스크립트가 **`python3 -S`(시스템 site-packages 차단)로 import·selftest 를
+  돌려** 시스템 패키지 없이 동작함을 단정한다. 이 RPi 에는 esptool·lgpio 가 설치돼 있어
+  일반 실행으로는 폐쇄망 상황이 재현되지 않는다 — 현장 재현 시험도 `-S` 로 한다.
+- 두 도구 모두 **Python 3.7+** 에서 동작한다 (vermin 정적 검사).
+- 포토센서 GPIO 는 lgpio(C 확장) 대신 `gpio_cdev.py` 로 커널 인터페이스를 직접 쓴다.
+  의존성 0, 커널 5.10+ (bullseye 이후) 면 OS·32/64비트·Python 버전 무관. lgpio 휠은
+  64비트 bookworm 에서만 단독 동작해 패키지에 넣을 수 없었다 (2026-09-26 조사).
+- 넣어 갈 수 없는 것: **tkinter**(Lite 이미지엔 없음 → GUI 불가, 수집기 CLI 는 가능).
+  없을 때 이유를 화면에 남기고 죽지 않는다.
+
+**개발용 `./dev-flash.sh`(예전 이름 `run.sh`)로 구운 펌웨어를 출하하지 말 것.** 개발 빌드는
 `CONFIG_WIFI_PREFER_NVS=n` 이라 설정툴이 주입한 WiFi 를 무시한다. 배포에는
 `tools/build-deploy.sh` → `tools/make-deploy-package.sh` 를 쓴다
 (`esp_flash.flash_firmware()` 가 manifest 의 `wifi_prefer_nvs` 를 단정해 막는다).

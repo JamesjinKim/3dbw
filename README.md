@@ -33,39 +33,37 @@ PASS/FAIL 과 조치 안내를 냅니다. 종료코드 `0`=PASS `1`=WARN `2`=FAI
 ESP-IDF 없이 돌아갑니다 (`dist/` 에 구울 펌웨어가 들어 있습니다).
 핀맵을 바꿨다면 `./build.sh` 로 다시 빌드하세요.
 
-### ② 펌웨어 굽기 + 설정 — `sensor-setup-py/`
+### ② 펌웨어 굽기 + 설정 — `sensor-setup-py/` · **SHT 진동센서 설정**
 
 ```bash
-python3 sensor-setup-py/set_sensor_gui.py
+python3 sensor-setup-py/set_sensor_gui.py      # 개발 트리에서 바로 실행
 ```
 
 한 창에서 **① 펌웨어 굽기 → ② 설정 주입**까지 끝납니다.
 WiFi(UDP)와 USB 직결 중 전송 방식을 고르고, 측정 속도·범위·읽기 방식을 정합니다.
 주입 후 부팅 로그에서 **펌웨어가 되울린 설정을 입력값과 대조**해 반영을 확인합니다.
 
-배포용 펌웨어 패키지는 이렇게 만듭니다.
+배포 패키지는 이렇게 만듭니다. 결과는 `dist/` — 이 폴더를 zip 으로 묶어 배포하고,
+사용자는 풀어서 `bash run.sh` 하나로 실행합니다.
 
 ```bash
 ./tools/build-deploy.sh                          # 배포 빌드 (NVS 우선)
-./tools/make-deploy-package.sh --version 1.0.0   # tar.gz + sha256
+./tools/make-deploy-package.sh --version 1.0.0   # → dist/iis3dwb-setup-1.0.0/
 ```
 
-> 개발 중 빠르게 굽고 로그를 보려면 `./run.sh` 를 씁니다.
-> 다만 이것은 **개발 빌드**라 NVS 의 WiFi 설정을 무시합니다 — 출하에는 쓰지 마세요.
+> 개발 중 빠르게 굽고 로그를 보려면 `./dev-flash.sh` 를 씁니다.
+> 다만 이것은 **개발 빌드**라 NVS 의 WiFi 설정을 무시하고 시리얼 속도도 다릅니다 —
+> 출하에는 쓰지 마세요.
 
-### ③ 데이터 수집 — `rpi-collector/`
+### ③ 데이터 수집 — `rpi-collector/` · **SHT 진동센서 수집**
 
-포토센서가 감지되면 정해진 시간만큼 기록하고 저장합니다.
+포토센서에 불이 들어오면 짝지어진 진동센서만 정해진 시간만큼 기록하고 저장합니다.
 **진동센서 1대마다 포토센서 1개**가 짝을 이루며 각 짝은 독립 동작합니다.
 
 ```bash
-# 처음 한 번 — USB 구멍마다 고정 장치 이름을 만든다
-python3 rpi-collector/slots.py --auto
-sudo python3 rpi-collector/slots.py --make-udev
-
-# 수집
-python3 rpi-collector/collect_cli.py --auto --minutes 5   # 포토센서 대기
-python3 rpi-collector/collect_cli.py --watch              # 기록 없이 상태만
+python3 rpi-collector/collector_gui.py              # 수집기 화면 (개발 트리)
+python3 rpi-collector/collect_cli.py --auto         # 화면 없는 RPi 용 글자 화면
+./tools/make-collector-package.sh --version 1.0.0   # → dist-collector/
 ```
 
 사용법과 **데이터 분석 시 주의사항**은 도움말에 있습니다.
@@ -76,18 +74,14 @@ python3 rpi-collector/helpdoc.py     # 브라우저로 열림 (인터넷 불필�
 
 ---
 
-## 처음 설치
+## 처음 설치 (개발 RPi)
 
 ```bash
 ./setup-rpi.sh        # ESP-IDF v5.4.3 + 의존 패키지 + 포트 권한
 ```
 
-수집·설정툴만 쓴다면 ESP-IDF 없이 이것만으로 충분합니다.
-
-```bash
-sudo apt install -y python3-tk python3-serial python3-lgpio esptool
-sudo usermod -aG dialout,plugdev,gpio $USER   # 후 로그아웃·재로그인
-```
+현장 RPi 에는 아무것도 설치하지 않습니다. 배포 zip 을 풀어 `bash run.sh` 하면
+패키지 안의 라이브러리(`vendor/`)로 돌고, 필요한 USB 권한은 처음 실행 때 스스로 설정합니다.
 
 ---
 
@@ -113,10 +107,12 @@ RMS·피크 같은 전체 진동량만 본다면 낮은 레이트도 정확합�
 |---|---|
 | `main/` `components/` | 펌웨어 소스 (ESP-IDF) |
 | `boardcheck/` | ① 보드 진단 — 독립 ESP-IDF 프로젝트 |
-| `sensor-setup-py/` | ② 펌웨어 굽기 + 설정 주입 (tkinter) |
-| `rpi-collector/` | ③ 데이터 수집 (tkinter) + UDP 수신기 |
+| `sensor-setup-py/` | ② SHT 진동센서 설정 — 펌웨어 굽기 + 설정 주입 (tkinter) |
+| `rpi-collector/` | ③ SHT 진동센서 수집 — 수집기 화면 (tkinter) + 글자 화면 + UDP 수신기 |
 | `tools/` | 배포 빌드·패키징·USB 복구 스크립트 |
-| `deploy/` | udev 규칙 |
+| `deploy/` | 두 배포 패키지 공용 `run.sh`·`install.sh`·udev 규칙 |
+| `vendor/` | 폐쇄망 배포용 파이썬 라이브러리 원본 (해시 고정) |
+| `dev-flash.sh` | **개발용** 빌드·굽기·모니터 — 출하에 쓰지 말 것 |
 | `docs/` | 패킷 규격 · 시리얼 전송 설계 · FIFO 인터럽트 · 데이터시트 |
 
 센서 핀맵은 **`components/iis3dwb/Kconfig` 한 곳**에만 있습니다.

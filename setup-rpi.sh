@@ -121,23 +121,21 @@ echo " 완료"
 echo "======================================================"
 if [ $RECEIVER_ONLY -eq 1 ]; then
   cat <<'EOF'
-수신기 실행:
-  cd rpi-collector
-  ./run.sh            # WiFi(UDP) 수신
-  ./run.sh serial     # USB 직결(시리얼) 수신
+수집기 실행 (SHT 진동센서 수집):
+  python3 rpi-collector/collector_gui.py
 
-센서 설정(WiFi/서버IP/속도) 주입:
-  cd sensor-setup-py && python3 set_sensor_gui.py
+센서 설정 주입 (SHT 진동센서 설정):
+  python3 sensor-setup-py/set_sensor_gui.py
 EOF
 else
   cat <<EOF
 새 터미널에서 ESP-IDF 활성화:
   get_idf          # 또는  . $IDF_DIR/export.sh
 
-펌웨어 빌드·플래시·모니터:
-  ./run.sh         # 포트 자동 감지 후 build+flash+monitor
+펌웨어 빌드·플래시·모니터 (개발용 — 출하에 쓰지 말 것):
+  ./dev-flash.sh   # 포트 자동 감지 후 build+flash+monitor
 
-수신기 실행:
-  cd rpi-collector && ./run.sh
+수집기 실행 (SHT 진동센서 수집):
+  python3 rpi-collector/collector_gui.py
 EOF
 fi
