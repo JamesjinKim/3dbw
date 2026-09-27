@@ -20,6 +20,7 @@ import struct
 import threading
 import time
 
+import vendor_path  # noqa: F401  — 배포 패키지의 vendor/pyserial 을 먼저 잡는다
 import serial
 
 from iis3dwb_packet import MAGIC_LE, RATE_HZ, parse_header, SeqTracker
@@ -92,6 +93,9 @@ class SensorLink:
         self._thread = None
         self._stop = threading.Event()
         self._error = None              # 치명적 오류 메시지 (케이블 분리 등)
+        # flush() 는 요청만 하고 실제 비우기는 읽기 스레드가 한다 (flush 참고)
+        self._resync_req = threading.Event()
+        self._resync_done = threading.Event()
 
     # ---------- 수명 ----------
     def open(self):
@@ -123,13 +127,34 @@ class SensorLink:
     def error(self):
         return self._error
 
-    def flush(self):
-        """수집 시작 직전에 호출 — OS 버퍼의 과거 데이터를 버린다."""
-        if self._ser:
+    def flush(self, timeout=1.0):
+        """수집 시작 직전에 호출 — OS 버퍼의 과거 데이터를 버린다.
+
+        **비우기는 읽기 스레드가 한다.** 호출자 스레드에서 직접
+        `reset_input_buffer()` 를 하면 읽기 스레드가 조립 중이던 패킷의 뒷부분이
+        사라지고, 그 자리가 seq 불연속으로 보여 **우리가 만든 끊김이 '유실'로
+        기록된다.** (실제로 2대 동시 수집에서 한쪽만 유실 1패킷으로 잡혔고,
+        원인은 이 flush 였다)
+
+        읽기 스레드는 자기 조립 버퍼까지 같이 비우고 seq 기준점을 새로 잡으므로
+        경계가 어디서 잘리든 유실로 세지 않는다. 비우기가 끝날 때까지 기다렸다가
+        돌아오므로, 호출자는 이 함수가 반환한 뒤에 `recording = True` 로 두면
+        과거 데이터가 섞이지 않는다.
+        """
+        if not self._ser:
+            return
+        if not (self._thread and self._thread.is_alive()):
+            # 읽기 스레드가 없으면 직접 — 잘릴 패킷도 없다
             try:
                 self._ser.reset_input_buffer()
             except Exception:
                 pass
+            return
+        self._resync_done.clear()
+        self._resync_req.set()
+        # 초당 수십 회 도는 루프라 보통 수 ms 안에 끝난다. 타임아웃은 스레드가
+        # 멈춘 이상 상황에서 영원히 매달리지 않기 위한 안전장치일 뿐이다.
+        self._resync_done.wait(timeout)
 
     # ---------- 읽기 루프 ----------
     def _loop(self):
@@ -141,6 +166,18 @@ class SensorLink:
         last_mg = (0.0, 0.0, 0.0)       # 가장 최근 샘플 (1g 확인용)
 
         while not self._stop.is_set():
+            if self._resync_req.is_set():
+                # flush() 요청. OS 버퍼와 조립 버퍼를 함께 비우고 seq 기준점을
+                # 새로 잡는다. 여기서 끊은 자리는 우리가 일부러 끊은 것이므로
+                # 유실로도, 재동기 쓰레기로도 세지 않는다.
+                self._resync_req.clear()
+                try:
+                    self._ser.reset_input_buffer()
+                except Exception:
+                    pass
+                del buf[:]
+                seqt.last = None
+                self._resync_done.set()
             try:
                 chunk = self._ser.read(max(self._ser.in_waiting, 1))
             except Exception as e:

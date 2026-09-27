@@ -36,6 +36,8 @@ import os
 import re
 from pathlib import Path
 
+import vendor_path  # noqa: F401  — 배포 패키지의 vendor/pyserial 을 먼저 잡는다
+
 BY_PATH = Path("/dev/serial/by-path")
 
 def _config_home():
@@ -136,7 +138,8 @@ def list_ports():
         from serial.tools import list_ports as lp
     except ImportError:                       # pragma: no cover
         raise RuntimeError(
-            "pyserial 이 필요합니다:  sudo apt install -y python3-serial")
+            "pyserial 을 찾지 못했습니다 — 배포 패키지의 vendor/ 폴더가 "
+            "빠졌거나 손상됐습니다. 패키지를 다시 풀어서 실행하세요.")
 
     dev2slot = _device_to_slot()
     # 고정 이름(/dev/iis3dwb*) 이 가리키는 실제 장치 → 고정 이름
@@ -271,7 +274,7 @@ def udev_rules_text(mapping=None):
     lines = [
         "# IIS3DWB 수집기 — USB 포트별 고정 장치 이름",
         "#",
-        "# 이 파일은 `python3 slots.py --make-udev` 가 만든 것입니다. 직접 고치기보다",
+        "# 이 파일은 `bash run.sh slots --make-udev` 가 만든 것입니다. 직접 고치기보다",
         "# 슬롯 지정을 바꾼 뒤 다시 생성하십시오.",
         "#",
         "# 브리지칩에 고유 일련번호가 없어 **꽂힌 USB 구멍**이 유일한 구분 근거입니다.",
@@ -332,6 +335,36 @@ class Resolution:
         실제로 있으므로 여기서 막지 않고, 사실만 안내한다.
         """
         return bool(self.assigned) and not self.unknown
+
+
+def auto_assign():
+    """연결된 포트에 USB 구멍 순서대로 1, 2, 3 … 을 붙이고 DIN1, DIN2 … 와 짝짓는다.
+
+    슬롯 키에는 USB 허브 포트 번호가 들어 있어 정렬하면 물리적 배치 순서와 대체로
+    일치한다. CLI(--auto)와 GUI(센서 번호 지정)가 같은 규칙을 쓰도록 한 곳에 둔다.
+    지정한 포트 목록을 돌려준다 (없으면 빈 목록, 아무것도 저장하지 않음).
+    """
+    ports = list_ports()
+    if ports:
+        save_mapping({p.slot: str(i + 1) for i, p in enumerate(ports)},
+                     {str(i + 1): i + 1 for i in range(len(ports))})
+    return ports
+
+
+def suggest_names(res):
+    """이름 없는 슬롯마다 겹치지 않는 이름을 제안한다 ({장치: 이름}).
+
+    예전에는 모든 슬롯에 같은 이름 'A' 를 안내해, 그대로 따라 하면 두 번째
+    지정이 첫 번째를 덮었다. 이미 쓰인 이름을 피해 1, 2, 3 ... 순으로 준다.
+    """
+    used = {name for name, _ in res.assigned} | set(res.missing)
+    out, n = {}, 1
+    for p in res.unknown:
+        while str(n) in used:
+            n += 1
+        out[p.device] = str(n)
+        used.add(str(n))
+    return out
 
 
 def resolve(mapping=None):
@@ -398,19 +431,15 @@ def main(argv=None):
             return 1
 
     if args.auto:
-        # 슬롯 키 순서대로 1, 2, 3 … 을 붙인다. 슬롯 키에는 USB 허브 포트 번호가
-        # 들어 있어 정렬하면 물리적 배치 순서와 대체로 일치한다.
-        ports = list_ports()
+        ports = auto_assign()
         if not ports:
             print("❌ 연결된 센서 포트가 없습니다.")
             return 1
-        mapping = {p.slot: str(i + 1) for i, p in enumerate(ports)}
-        save_mapping(mapping, {str(i + 1): i + 1 for i in range(len(ports))})
         print("자동 지정 (%d대)" % len(ports))
         for i, p in enumerate(ports):
             print("  %s  →  센서 %d   (포토센서 DIN%d)"
                   % (p.device, i + 1, i + 1))
-        print("\n고정 이름을 만들려면:  sudo python3 slots.py --make-udev")
+        print("\n고정 이름을 만들려면:  bash run.sh slots --make-udev")
 
     if args.print_udev:
         print(udev_rules_text(), end="")
@@ -426,7 +455,7 @@ def main(argv=None):
                 f.write(text)
         except PermissionError:
             print("❌ 권한이 없습니다. 이렇게 실행하세요:")
-            print("   sudo python3 %s --make-udev" % os.path.basename(__file__))
+            print("   bash run.sh slots --make-udev   (또는 sudo python3 slots.py --make-udev)")
             return 1
         import subprocess
         subprocess.run(["udevadm", "control", "--reload-rules"], check=False)
@@ -468,13 +497,15 @@ def main(argv=None):
         if any(p.fixed is None for _, p in res.assigned):
             print("\n  ℹ 고정 장치 이름이 없습니다. 만들면 /dev/ttyACM 번호가 바뀌어도")
             print("    같은 구멍은 항상 같은 이름이 됩니다:")
-            print("      sudo python3 slots.py --make-udev")
+            print("      bash run.sh slots --make-udev")
     if res.unknown:
         print("")
         print("⚠ 이름이 지정되지 않은 슬롯 — 이름을 지정해야 수집할 수 있습니다")
+        names = suggest_names(res)
         for p in res.unknown:
             print("  %-14s %-24s %s" % (p.device, p.short_slot, p.chip))
-            print("       지정:  python3 slots.py --assign %s A" % p.device)
+            print("       지정:  bash run.sh slots --assign %s %s" % (p.device, names[p.device]))
+        print("  한 번에 지정:  bash run.sh slots --auto   (USB 구멍 순서대로 1, 2 ...)")
     if res.missing:
         print("")
         print("ℹ 센서 %d대가 인식되었습니다. 이대로 수집할 수 있습니다."

@@ -7,6 +7,8 @@
 그쪽은 `trigger.py --watch` 와 `collect_cli.py` 로 확인한다.
 """
 
+import contextlib
+import io
 import json
 import queue
 import struct
@@ -20,6 +22,8 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import bin_to_csv
+import collect_cli
+import sensor_link
 import session as session_mod
 import slots
 import trigger as trigger_mod
@@ -226,6 +230,30 @@ t2 = trigger_mod.PhotoTrigger(gpio=5, active_low=True)
 check(t2.level() is None and t2.is_active() is None,
       "start() 하지 않은 상태에서 레벨이 None 이 아님")
 
+check([session_mod.human_duration(m) for m in (5, 5 / 60, 1.5, 0.25)]
+      == ["5분", "5초", "1분 30초", "15초"], "수집 길이 표시가 틀림")
+
+group("GPIO 백엔드 (cdev · 하드웨어 없이)")
+
+import gpio_cdev
+# 커널 구조체 크기가 어긋나면 ioctl 이 엉뚱한 메모리를 읽는다 (32/64비트 공통이어야 함)
+check(len(gpio_cdev._config(0, 0)) == 272, "gpio_v2_line_config 크기 ≠ 272")
+check(len(gpio_cdev._config(0, 50000)) == 272, "디바운스 속성 포함 시 크기 ≠ 272")
+check(gpio_cdev._GET_LINE == 0xC250B407, "GPIO_V2_GET_LINE_IOCTL 번호가 틀림")
+check(gpio_cdev._SET_CONFIG == 0xC110B40D, "GPIO_V2_LINE_SET_CONFIG_IOCTL 번호가 틀림")
+check(gpio_cdev._GET_VALUES == 0xC010B40E, "GPIO_V2_LINE_GET_VALUES_IOCTL 번호가 틀림")
+
+# 커널이 v2 를 모르면 lgpio 로 물러서고, lgpio 도 없으면 이유를 담아 실패해야 한다
+_real_cdev, _real_lgpio = trigger_mod._CdevHandle, trigger_mod.lgpio
+def _unsupported(*a, **k):
+    raise gpio_cdev.Unsupported(25, "v2 미지원")
+trigger_mod._CdevHandle = _unsupported
+trigger_mod.lgpio = None
+t3 = trigger_mod.PhotoTrigger(gpio=5)
+check(not t3.start() and "v2 미지원" in (t3.error or ""),
+      "cdev·lgpio 모두 불가인데 이유가 남지 않음: %r" % t3.error)
+trigger_mod._CdevHandle, trigger_mod.lgpio = _real_cdev, _real_lgpio
+
 # ---------------------------------------------------------------- 세션
 group("포토센서 배정 (1센서 : 1포토센서)")
 
@@ -318,6 +346,133 @@ with tempfile.TemporaryDirectory() as td:
     check(session_mod._next_run_index(d / "A") == 13, "A 폴더 번호가 틀림")
     check(session_mod._next_run_index(d / "B") == 1,
           "B 폴더가 A 의 번호에 영향을 받음")
+
+group("빠진 센서를 조용히 넘기지 않는다")
+
+# 2대 수집에서 한 대만 5분을 기록하고 판정이 '정상' 으로 나온 적이 있다.
+# 원인 두 가지를 각각 막는다.
+# preflight 는 실제 USB 슬롯 상태(slots.resolve)를 본다. 슬롯을 지정하기 전인
+# 새 RPi 에 센서가 꽂혀 있으면 모든 채널이 "이름 없는 슬롯" 으로 거부돼 이 검사가
+# 헛되이 실패한다. 여기서는 채널 선택 논리만 보므로 슬롯은 모두 지정된 것으로 둔다.
+_real_resolve = slots.resolve
+slots.resolve = lambda mapping=None: slots.Resolution([], [], [])
+with tempfile.TemporaryDirectory() as td:
+    col = session_mod.Collector(td, minutes=1, fmt="csv")
+
+    class _FakeLink:
+        def __init__(self, receiving):
+            self.stats = sensor_link.LinkStats()
+            self.stats.connected = True
+            self.stats.last_seen = time.monotonic() if receiving else 0.0
+
+    def _fake_ch(name, receiving):
+        ch = session_mod.Channel.__new__(session_mod.Channel)
+        ch.name, ch.din, ch.collector = name, 1, col
+        ch.state = session_mod.IDLE
+        ch.link = _FakeLink(receiving)
+        ch.started = False
+        ch.start = lambda source="수동", _c=ch: (setattr(_c, "started", True), True)[1]
+        return ch
+
+    # ① 첫 패킷이 늦은 센서도 대상에 들어가야 한다 — 빠지면 사유가 남는다
+    col.channels = {"1": _fake_ch("1", True), "2": _fake_ch("2", False)}
+    events = []
+    col.set_event_handler(lambda k, m: events.append((k, m)))
+    started = col.start_manual()
+    check(started == ["1"], "데이터가 없는 채널이 시작됨: %r" % started)
+    check(any(k == "error" and "2" in m for k, m in events),
+          "빠진 센서 2의 사유가 남지 않음: %r" % events)
+
+    # ② 둘 다 들어오면 둘 다 시작한다
+    col.channels = {"1": _fake_ch("1", True), "2": _fake_ch("2", True)}
+    check(sorted(col.start_manual()) == ["1", "2"],
+          "데이터가 들어오는 2채널이 모두 시작되지 않음")
+slots.resolve = _real_resolve
+
+# ④ 이름 없는 슬롯 안내가 모두 같은 이름('A')을 제안해 따라 하면 덮어썼다
+class _P:
+    def __init__(self, dev): self.device = dev
+_sug = slots.suggest_names(slots.Resolution(
+    [("1", _P("/dev/ttyACM9"))], [_P("/dev/ttyACM0"), _P("/dev/ttyACM1")], ["3"]))
+check(sorted(_sug.values()) == ["2", "4"],
+      "이름 제안이 겹치거나 이미 쓰인 이름을 줌: %r" % _sug)
+
+# ③ 표에 줄이 하나뿐인데 '정상' 이 나오면 안 된다
+res = session_mod.RunResult(
+    sensor="1", index=1, file="run_0001.csv", samples=100, packets=1,
+    loss_pct=0.0, queue_drops=0, bytes=100, stop_reason="시간 완료",
+    ok=True, note=None)
+_buf = io.StringIO()
+with contextlib.redirect_stdout(_buf):
+    rc = collect_cli.summarize([res], missing=["2"])
+check(rc != 0, "수집 못 한 센서가 있는데 종료코드가 0")
+check("2(수집 못 함)" in _buf.getvalue(),
+      "판정에 빠진 센서가 적히지 않음: %r" % _buf.getvalue())
+
+# ---------------------------------------------------------------- 공통 설정
+group("공통 설정 저장/조회 (GUI ↔ 글자 화면 공유)")
+import settings as settings_mod
+with tempfile.TemporaryDirectory() as td:
+    _orig = settings_mod.SETTINGS_PATH
+    settings_mod.SETTINGS_PATH = Path(td) / "settings.json"
+    try:
+        check(settings_mod.load() == settings_mod.DEFAULTS, "설정 파일이 없을 때 기본값이 아님")
+        settings_mod.save({"minutes": 0.5, "fmt": "bin", "모르는키": 1})
+        d = settings_mod.load()
+        check(d["minutes"] == 0.5 and d["fmt"] == "bin", "저장한 설정이 읽히지 않음: %r" % d)
+        check("모르는키" not in json.loads(settings_mod.SETTINGS_PATH.read_text()),
+              "모르는 키가 저장됨")
+        settings_mod.save({"active_low": False})
+        check(settings_mod.load()["minutes"] == 0.5, "다른 항목 저장이 기존 값을 지움")
+        # 손으로 고쳐 깨진 값 — 그 항목만 기본값으로 (수집 시간 0·음수는 막는다)
+        settings_mod.SETTINGS_PATH.write_text(
+            json.dumps({"minutes": -3, "fmt": "xls", "active_low": "yes"}))
+        d = settings_mod.load()
+        check(d["minutes"] == settings_mod.DEFAULTS["minutes"] and d["fmt"] == "csv"
+              and d["active_low"] is True, "잘못된 값을 걸러내지 못함: %r" % d)
+        settings_mod.SETTINGS_PATH.write_text("{ 깨진 json")
+        check(settings_mod.load() == settings_mod.DEFAULTS, "깨진 파일에서 기본값으로 돌아가지 않음")
+    finally:
+        settings_mod.SETTINGS_PATH = _orig
+
+# 글자 화면의 기본값이 저장된 설정을 따르는지 (GUI 에서 바꾼 수집 시간이 Lite 에서도 적용)
+with tempfile.TemporaryDirectory() as td:
+    _orig = settings_mod.SETTINGS_PATH
+    settings_mod.SETTINGS_PATH = Path(td) / "settings.json"
+    try:
+        settings_mod.save({"minutes": 2.5})
+        _seen = {}
+        _orig_resolve = slots.resolve
+        slots.resolve = lambda mapping=None: slots.Resolution([], [], [])
+        try:
+            _orig_cmd = collect_cli.cmd_status
+            collect_cli.cmd_status = lambda: 0
+            with contextlib.redirect_stdout(io.StringIO()):
+                import argparse
+                _orig_parse = argparse.ArgumentParser.parse_args
+                def _spy(self, argv=None, ns=None):
+                    r = _orig_parse(self, argv, ns); _seen["m"] = r.minutes; return r
+                argparse.ArgumentParser.parse_args = _spy
+                try:
+                    collect_cli.main(["--status"])
+                finally:
+                    argparse.ArgumentParser.parse_args = _orig_parse
+            collect_cli.cmd_status = _orig_cmd
+        finally:
+            slots.resolve = _orig_resolve
+        check(_seen.get("m") == 2.5, "글자 화면이 저장된 수집 시간을 쓰지 않음: %r" % _seen)
+    finally:
+        settings_mod.SETTINGS_PATH = _orig
+
+# 수집기 화면은 tkinter 가 있을 때만 import 한다 (Lite 이미지에는 없다)
+try:
+    import tkinter  # noqa: F401
+    _has_tk = True
+except ImportError:
+    _has_tk = False
+if _has_tk:
+    import collector_gui
+    check(collector_gui.APP_NAME == "SHT 진동센서 수집", "수집기 공식 명칭이 다름")
 
 # ---------------------------------------------------------------- 결과
 print("")

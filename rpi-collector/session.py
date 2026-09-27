@@ -49,6 +49,9 @@ from iis3dwb_packet import RATE_HZ
 # 링버퍼 깊이 — 패킷 단위. 200샘플/패킷이므로 26.6kHz 에서 1초는 약 133패킷.
 # 512 면 약 4초를 버틴다. 이보다 키워도 GC 부담만 늘고 도움이 안 된다.
 QUEUE_MAXSIZE = 512
+# 패킷 없이 이만큼(B/s) 쓰레기가 계속 들어오면 보드레이트 불일치로 본다.
+# 1 kHz 스트림을 틀린 속도로 읽으면 약 7.8KB/s 가 들어왔다.
+GARBLE_BPS = 1000
 
 IDLE = "idle"
 RECORDING = "recording"
@@ -89,6 +92,10 @@ class Channel:
             din=din, active_low=collector.active_low,
             on_trigger=self._on_trigger)
 
+        # garbled 판정용: (측정 시작 시각, 그때의 resync_bytes), 최근 쓰레기 유입률(B/s)
+        self._garble_ref = (time.monotonic(), 0)
+        self._garble_rate = 0.0
+
         self.state = IDLE
         self.run_index = None
         self.run_dir = None
@@ -114,6 +121,23 @@ class Channel:
                                          "가능합니다\n%s"
                                  % (self.name, self.din, self.trigger.error))
 
+    def set_din(self, din):
+        """이 센서가 바라볼 포토센서를 바꾼다. 감시를 다시 건다. 성공하면 True.
+
+        배선에 맞춰 GUI 에서 고른다. 틀리면 1번을 지나간 제품이 2번으로 기록되므로,
+        바뀐 값은 화면의 실시간 레벨로 바로 확인할 수 있어야 한다.
+        """
+        self.trigger.stop()
+        self.din = din
+        self.trigger = trigger_mod.PhotoTrigger(
+            din=din, active_low=self.collector.active_low,
+            on_trigger=self._on_trigger)
+        if not self.trigger.start():
+            self.collector._emit("warn", "%s 포토센서(DIN%d) 사용 불가: %s"
+                                 % (self.name, din, self.trigger.error))
+            return False
+        return True
+
     def close(self):
         if self.state == RECORDING:
             self.stop(reason="프로그램 종료")
@@ -129,6 +153,22 @@ class Channel:
                     and (time.monotonic() - st.last_seen) < 3.0)
 
     @property
+    def garbled(self):
+        """바이트는 들어오는데 패킷이 아니다 — 보드레이트 불일치.
+
+        ○(데이터 없음)과 같은 모양으로 보이면 '케이블·전원 확인' 으로 헤매게 된다.
+        실제로는 개발용 ./run.sh 로 구운 보드(921600 bps)를 2 Mbps 로 읽고 있었다
+        (2026-09-27). 부팅 로그(약 3.5KB, 한 번)는 문턱을 넘지 않도록 초당 유입률로 본다.
+        """
+        st = self.link.stats
+        now = time.monotonic()
+        t0, r0 = self._garble_ref
+        if now - t0 >= 3.0:
+            self._garble_rate = (st.resync_bytes - r0) / (now - t0)
+            self._garble_ref = (now, st.resync_bytes)
+        return (not self.receiving) and self._garble_rate > GARBLE_BPS
+
+    @property
     def elapsed(self):
         if self.state == IDLE or self.started_at is None:
             return 0.0
@@ -140,7 +180,7 @@ class Channel:
 
     # ---------- 트리거 ----------
     def _on_trigger(self):
-        """**lgpio 콜백 스레드에서 호출된다.** 위젯을 만지면 안 된다."""
+        """**GPIO 감시 스레드에서 호출된다.** 위젯을 만지면 안 된다."""
         with self._lock:
             if self.state != IDLE:
                 self.ignored_triggers += 1
@@ -193,8 +233,9 @@ class Channel:
         self.writer.start()
         self.link.recording = True
 
-        c._emit("started", "%s run_%04d 시작 — %s · %g분 · %s"
-                % (self.name, self.run_index, source, c.minutes, self.fmt.upper()))
+        c._emit("started", "%s run_%04d 시작 — %s · %s · %s"
+                % (self.name, self.run_index, source, human_duration(c.minutes),
+                   self.fmt.upper()))
 
         # 시간이 되면 스스로 끝난다. 사용자가 화면을 보지 않아도 저장된다.
         self._timer = threading.Timer(self.duration_s,
@@ -440,16 +481,24 @@ class Collector:
         if need > free * 0.9:
             raise PreflightError(
                 "저장 공간이 부족합니다.\n"
-                "필요 %s · 여유 %s (%g분 × %d대 × %s)\n"
+                "필요 %s · 여유 %s (%s × %d대 × %s)\n"
                 "수집 길이를 줄이거나 바이너리 형식을 쓰세요 (용량 1/10)."
                 % (writer_mod.human_bytes(need), writer_mod.human_bytes(free),
-                   self.minutes, n, self.fmt.upper()))
+                   human_duration(self.minutes), n, self.fmt.upper()))
         return need
 
     # ---------- 수동 조작 ----------
     def start_manual(self, names=None):
-        """수동 시작. 이름을 주지 않으면 데이터가 들어오는 모든 채널."""
-        targets = names if names else self.receiving_names
+        """수동 시작. 이름을 주지 않으면 **열려 있는 모든 채널**.
+
+        예전에는 `receiving_names`(지금 데이터가 들어오는 채널)를 기본값으로 삼았다.
+        그러면 첫 패킷이 몇백 ms 늦은 센서가 **아무 말 없이 수집에서 빠진다.**
+        실제로 2대 수집에서 한 대만 5분을 기록하고 판정은 '정상' 이 나왔다.
+
+        대신 모든 채널을 대상으로 두고 `preflight` 가 거르게 한다. 데이터가 안
+        들어오는 채널은 "시작 불가" 사유가 화면에 남으므로 놓칠 수 없다.
+        """
+        targets = names if names else list(self.channels)
         started = []
         for n in targets:
             ch = self.channels.get(n)
@@ -477,6 +526,18 @@ class Collector:
             if not ch.trigger.start():
                 self._emit("warn", "%s 포토센서 재설정 실패: %s"
                            % (ch.name, ch.trigger.error))
+
+
+def human_duration(minutes):
+    """수집 길이(분)를 사람이 읽는 문자열로. 5 → '5분', 1/12 → '5초', 1.5 → '1분 30초'.
+
+    --seconds 로 짧게 줄 때 '%g분' 으로 찍으면 '0.0833333분' 이 된다.
+    """
+    s = int(round(minutes * 60))
+    if s < 60:
+        return "%d초" % s
+    m, s = divmod(s, 60)
+    return "%d분" % m if s == 0 else "%d분 %d초" % (m, s)
 
 
 def _next_run_index(sensor_dir):

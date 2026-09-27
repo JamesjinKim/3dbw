@@ -23,11 +23,10 @@ if str(HERE) not in sys.path:
 
 import sensor_link
 import session as session_mod
+import settings as settings_mod
 import slots
 import writer as writer_mod
 from iis3dwb_packet import RATE_HZ
-
-DEFAULT_OUT = Path.home() / "vibdata"
 
 # 커서를 올려 같은 줄을 덮어쓰는 표시는 터미널에서만 의미가 있다.
 # 파이프·로그로 받으면 제어문자가 그대로 남아 읽기 어려워지므로 끈다.
@@ -55,7 +54,8 @@ def channel_line(ch):
     st = ch.link.stats
     target = RATE_HZ.get(st.rate_step, 0)
     mag = (st.mg[0] ** 2 + st.mg[1] ** 2 + st.mg[2] ** 2) ** 0.5
-    live = "●" if ch.receiving else "○"
+    garbled = ch.garbled
+    live = "●" if ch.receiving else ("✗" if garbled else "○")
 
     act = ch.trigger.is_active()
     photo = "?" if act is None else ("감지" if act else "대기")
@@ -67,6 +67,8 @@ def channel_line(ch):
         # 큐에 남은 것을 파일로 비우는 중. 이때 '대기' 로 보이면 이미 끝난 줄 알고
         # 케이블을 뽑는 사람이 생긴다.
         prog = "저장 중..."
+    elif garbled:
+        prog = "패킷 아님 — 펌웨어 확인"
     else:
         prog = "대기" + ("" if not ch.ignored_triggers
                          else " (무시 %d)" % ch.ignored_triggers)
@@ -90,9 +92,11 @@ def cmd_status():
                      {1: 5, 2: 17, 3: 27, 4: 22}[dins.get(name, 1)]))
     if res.unknown:
         print("\n⚠ 이름이 지정되지 않은 슬롯")
+        names = slots.suggest_names(res)
         for p in res.unknown:
-            print("  %-14s %-24s  지정: python3 slots.py --assign %s A"
-                  % (p.device, p.short_slot, p.device))
+            print("  %-14s %-24s  지정: bash run.sh slots --assign %s %s"
+                  % (p.device, p.short_slot, p.device, names[p.device]))
+        print("  한 번에 지정: bash run.sh slots --auto   (USB 구멍 순서대로 1, 2 ...)")
     if res.missing:
         print("\nℹ 센서 %d대가 인식되었습니다. 이대로 수집할 수 있습니다."
           "  (%s 는 연결되지 않음)"
@@ -103,7 +107,41 @@ def cmd_status():
     return 0 if res.ok else 2
 
 
-def summarize(results):
+def unnamed_guide(res):
+    """이름 없는 슬롯이 있을 때 수집 대신 보여 줄 안내. 막아야 하면 True.
+
+    세션을 먼저 열면 '[warn] 이름 없는 슬롯' → '❌ 열 수 있는 센서가 없습니다' →
+    상태표가 차례로 찍혀, 처음 쓰는 사람에게는 고장처럼 보였다 (2026-09-27).
+    할 일은 하나(번호 지정)뿐이므로 그것만 말하고 끝낸다.
+
+    일부만 이름이 있어도 막는다 — preflight 가 어차피 모든 수집을 거부하는데,
+    --auto 에서는 포토센서가 감지된 뒤에야 그 사실이 드러난다.
+    """
+    if not res.unknown:
+        return False
+    first = not res.assigned
+    print("\n%s\n" % ("센서 번호가 아직 정해지지 않았습니다 — 처음 한 번만 하면 됩니다."
+                      if first else
+                      "번호가 없는 센서가 있어 수집을 시작하지 않습니다."))
+    for name, p in res.assigned:
+        print("  센서 %-3s  %-14s USB 구멍 %s" % (name, p.device, p.short_slot))
+    for p in res.unknown:
+        print("  (번호 없음) %-14s USB 구멍 %s" % (p.device, p.short_slot))
+    print("\n  어느 센서의 데이터인지 모른 채 기록하면 되돌릴 수 없어 막아 둔 것입니다.\n")
+    print("  1) 센서를 모두 꽂은 상태에서   bash run.sh slots --auto")
+    print("     USB 구멍 순서대로 1, 2 … 를 붙이고 포토센서 DIN1, DIN2 … 와 짝짓습니다.")
+    print("  2) 고정 장치 이름 (권장)       bash run.sh slots --make-udev")
+    print("  3) 다시 수집                   bash run.sh")
+    print("\n  자세한 설명: bash run.sh help  (1장 '센서 번호 정하기')")
+    return True
+
+
+def summarize(results, missing=()):
+    """결과표와 판정. `missing` 은 열려 있었지만 수집하지 못한 센서 이름이다.
+
+    빠진 센서를 판정에 넣지 않으면 **한 대만 기록하고도 '정상'** 이 나온다.
+    실제로 그런 5분 수집이 있었고, 표에 줄이 하나뿐인 것 말고는 단서가 없었다.
+    """
     if not results:
         return 3
     print("=" * 74)
@@ -113,14 +151,17 @@ def summarize(results):
                  writer_mod.human_bytes(r.bytes), r.loss_pct, r.queue_drops,
                  r.stop_reason))
     bad = [r for r in results if not r.ok]
-    print("\n판정: %s" % ("정상" if not bad else
-                          "유실/드롭 있음 — %s" % ", ".join(
-                              "%s(%s)" % (r.sensor, r.note) for r in bad)))
-    return 0 if not bad else 1
+    reasons = ["%s(%s)" % (r.sensor, r.note) for r in bad]
+    reasons += ["%s(수집 못 함)" % n for n in missing]
+    print("\n판정: %s" % ("정상" if not reasons else
+                          "문제 있음 — %s" % ", ".join(reasons)))
+    return 0 if not reasons else 1
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="IIS3DWB 진동 수집 (CLI)")
+    # 기본값은 GUI 가 저장한 설정(settings.json). 옵션을 주면 이번 실행만 옵션이 이긴다.
+    cfg = settings_mod.load()
+    ap = argparse.ArgumentParser(description="SHT 진동센서 수집 (글자 화면)")
     ap.add_argument("--help-doc", action="store_true",
                     help="사용설명서(help.html)를 브라우저로 연다")
     ap.add_argument("--status", action="store_true", help="상태만 확인하고 종료")
@@ -130,13 +171,15 @@ def main(argv=None):
                     help="포토센서 신호를 기다려 자동 수집 (Ctrl+C 종료)")
     ap.add_argument("--manual", action="store_true", help="지금 바로 수집 시작")
     ap.add_argument("--only", metavar="이름", help="--manual 대상 센서 하나만")
-    ap.add_argument("--minutes", type=float, default=5, help="수집 길이 (분)")
+    ap.add_argument("--minutes", type=float, default=cfg["minutes"],
+                    help="수집 길이 (분, 기본: 저장된 설정 %g)" % cfg["minutes"])
     ap.add_argument("--seconds", type=float, default=0,
                     help="수집 길이 (초) — 시험용, --minutes 보다 우선")
-    ap.add_argument("--fmt", choices=["csv", "bin"], default="csv")
-    ap.add_argument("--out", default=str(DEFAULT_OUT), help="저장 폴더")
-    ap.add_argument("--active", choices=["low", "high"], default="low",
-                    help="포토센서 활성 레벨 (기본 low)")
+    ap.add_argument("--fmt", choices=["csv", "bin"], default=cfg["fmt"])
+    ap.add_argument("--out", default=cfg["out"], help="저장 폴더")
+    ap.add_argument("--active", choices=["low", "high"],
+                    default="low" if cfg["active_low"] else "high",
+                    help="포토센서 활성 레벨 (기본: 저장된 설정)")
     ap.add_argument("--baud", type=int, default=sensor_link.DEFAULT_BAUD,
                     help="펌웨어 CONFIG_STREAM_SERIAL_UART_BAUD 와 같아야 한다")
     args = ap.parse_args(argv)
@@ -154,6 +197,11 @@ def main(argv=None):
     if args.status:
         return cmd_status()
 
+    # --watch 는 기록하지 않으니, 이름 있는 센서가 하나라도 있으면 보여 준다
+    res = slots.resolve()
+    if (args.auto or args.manual or not res.assigned) and unnamed_guide(res):
+        return 2
+
     minutes = (args.seconds / 60.0) if args.seconds else args.minutes
     col = session_mod.Collector(
         args.out, minutes=minutes, fmt=args.fmt,
@@ -168,14 +216,23 @@ def main(argv=None):
         return 2
 
     print("센서를 여는 중... 첫 패킷을 기다립니다 (최대 5초)")
+    # 한 대라도 들어오면 끝내면 안 된다. 늦게 깨는 센서가 수집에서 빠진다.
     t0 = time.monotonic()
-    while time.monotonic() - t0 < 5.0 and not col.receiving_names:
+    while (time.monotonic() - t0 < 5.0
+           and len(col.receiving_names) < len(col.channels)):
         time.sleep(0.2)
 
     dins = slots.load_din_map(list(col.channels))
     for n, ch in sorted(col.channels.items()):
-        print("  %s ← 포토센서 DIN%d (GPIO%d) · 활성 %s"
-              % (n, ch.din, ch.trigger.gpio, args.active.upper()))
+        print("  %s ← 포토센서 DIN%d (GPIO%d) · 활성 %s · %s"
+              % (n, ch.din, ch.trigger.gpio, args.active.upper(),
+                 "GPIO " + ch.trigger.backend if ch.trigger.backend else "GPIO 사용 불가"))
+    for n, ch in sorted(col.channels.items()):
+        if ch.garbled:
+            print("\n⚠ 센서 %s (%s): 데이터는 들어오지만 IIS3DWB 패킷이 아닙니다.\n"
+                  "   통신 속도가 맞지 않는 펌웨어입니다 — 대개 개발용으로 구운 보드입니다.\n"
+                  "   설정툴(iis3dwb-setup)로 ① 펌웨어 굽기 → ② 설정 주입을 다시 하세요."
+                  % (n, ch.port), flush=True)
 
     try:
         if args.watch:
@@ -196,21 +253,27 @@ def main(argv=None):
             if not started:
                 print("❌ 시작된 채널이 없습니다.", file=sys.stderr)
                 return 2
+            wanted = [args.only] if args.only else list(col.channels)
+            missing = [n for n in wanted if n not in started]
+            if missing:
+                print("\n⚠ 수집을 시작하지 못한 센서: %s\n"
+                      "   위의 '시작 불가' 사유를 확인하세요. 나머지는 계속합니다."
+                      % ", ".join(sorted(missing)), file=sys.stderr)
             while col.any_recording:
                 time.sleep(1.0)
                 render([time.strftime("%H:%M:%S")] +
                        [channel_line(col.channels[n]) for n in sorted(col.channels)])
             render_done(len(col.channels) + 1)
             return summarize([ch.last_result for ch in col.channels.values()
-                              if ch.last_result])
+                              if ch.last_result], missing=sorted(missing))
 
         if args.auto:
             try:
                 col.check_space()
             except session_mod.PreflightError as e:
                 print("\n⚠ %s" % e, file=sys.stderr)
-            print("\n자동 수집 대기 — 포토센서가 감지되면 %g분씩 기록합니다. "
-                  "Ctrl+C 로 종료.\n" % minutes)
+            print("\n자동 수집 대기 — 포토센서가 감지되면 %s씩 기록합니다. "
+                  "Ctrl+C 로 종료.\n" % session_mod.human_duration(minutes))
             while True:
                 time.sleep(1.0)
                 render([time.strftime("%H:%M:%S")] +
