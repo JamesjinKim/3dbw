@@ -448,10 +448,24 @@ static bool test_5_int_pin(int *int2_lv, pin_state_t *int2_state)
     }
 
     /* 레지스터가 실제로 들어갔는지 되읽어 확인한다. 쓰기가 조용히 실패하면
-     * 이후 모든 판정이 "센서가 신호를 안 준다" 로 잘못 흐른다. */
-    uint8_t int1_ctrl = 0, fifo_ctrl1 = 0;
+     * 이후 모든 판정이 "센서가 신호를 안 준다" 로 잘못 흐른다.
+     *
+     * CTRL3_C 도 함께 읽는다. 이 레지스터의 H_LACTIVE(bit5)·PP_OD(bit4) 가
+     * INT 핀의 전기적 동작을 정하므로, "핀이 안 뜬다" 를 볼 때 하드웨어 담당자가
+     * 가장 먼저 묻는 값이다. 검사 결과에 찍어 두면 소스를 열지 않고도 답이 된다.
+     *   H_LACTIVE=0 → active high · PP_OD=0 → push-pull (외부 풀업 불필요)
+     */
+    uint8_t int1_ctrl = 0, fifo_ctrl1 = 0, ctrl3_c = 0;
     iis3dwb_read_register(&s_sensor, IIS3DWB_REG_INT1_CTRL, &int1_ctrl);
     iis3dwb_read_register(&s_sensor, IIS3DWB_REG_FIFO_CTRL1, &fifo_ctrl1);
+    iis3dwb_read_register(&s_sensor, IIS3DWB_REG_CTRL3_C, &ctrl3_c);
+    printf("      CTRL3_C=0x%02X  H_LACTIVE=%d(%s)  PP_OD=%d(%s)\n",
+           ctrl3_c,
+           (ctrl3_c & IIS3DWB_CTRL3_C_H_LACTIVE) ? 1 : 0,
+           (ctrl3_c & IIS3DWB_CTRL3_C_H_LACTIVE) ? "active low" : "active high",
+           (ctrl3_c & IIS3DWB_CTRL3_C_PP_OD) ? 1 : 0,
+           (ctrl3_c & IIS3DWB_CTRL3_C_PP_OD) ? "open-drain" : "push-pull");
+    fflush(stdout);
     if (!(int1_ctrl & IIS3DWB_INT1_FIFO_TH)) {
         char d[96];
         snprintf(d, sizeof(d), "INT1_CTRL=0x%02X — FIFO_TH 비트가 서지 않음", int1_ctrl);
@@ -484,19 +498,32 @@ static bool test_5_int_pin(int *int2_lv, pin_state_t *int2_state)
     int lv[3];
     pin_state_t ps = probe_pin(INT1_GPIO, lv);
 
-    char d[128];
-    snprintf(d, sizeof(d), "IO%d 풀업=%d 풀다운=%d 플로팅=%d (FIFO=%u WTM=1, INT1_CTRL=0x%02X FIFO_CTRL1=%u)",
-             INT1_GPIO, lv[0], lv[1], lv[2], count, int1_ctrl, fifo_ctrl1);
+    char d[160];
+    snprintf(d, sizeof(d),
+             "IO%d 풀업=%d 풀다운=%d 플로팅=%d (FIFO=%u WTM=1, "
+             "INT1_CTRL=0x%02X FIFO_CTRL1=%u CTRL3_C=0x%02X)",
+             INT1_GPIO, lv[0], lv[1], lv[2], count, int1_ctrl, fifo_ctrl1, ctrl3_c);
 
     switch (ps) {
     case PIN_DRIVEN_HIGH:
         set_result(4, R_PASS, d, NULL);
         return true;
     case PIN_UNDRIVEN:
+        /* push-pull(PP_OD=0) 설정에서 watermark 가 서 있는데도 핀이 능동 구동되지
+         * 않는다면, 센서 출력이 ESP32 핀까지 오지 못한 것이다. 원인은 둘 중 하나이고
+         * **이 검사만으로는 구분되지 않는다** — 배선이 전기적으로 정상이라면
+         * 센서 쪽 출력이 죽은 것이다. 둘 다 하드웨어 문제지만 조치가 다르다. */
         set_result(4, R_FAIL, d,
-                   "INT1 을 아무도 구동하지 않습니다 = 단선. 센서가 watermark 도달을 "
-                   "보고하는데도 핀이 뜨지 않으므로 센서 INT1 패드 → 보드간 커넥터 → "
-                   "ESP32 IO 까지의 경로 중 한 곳이 끊겼습니다. (INT2 대조군 결과를 함께 보세요)");
+                   (ctrl3_c & IIS3DWB_CTRL3_C_PP_OD)
+                     ? "CTRL3_C 의 PP_OD=1 (open-drain) 입니다. 이 모드에서는 센서가 "
+                       "핀을 HIGH 로 올리지 못하므로 외부 풀업이 필요합니다. "
+                       "설정 문제이니 펌웨어를 먼저 확인하세요."
+                     : "INT1 이 능동 구동되지 않습니다. CTRL3_C 는 push-pull·active "
+                       "high 로 정상이므로 설정 문제가 아닙니다. 원인은 둘 중 하나이며 "
+                       "이 검사로는 구분되지 않습니다 — (1) 센서 INT1 패드에서 ESP32 "
+                       "IO 까지의 단선, (2) 센서 자체의 INT1 출력 불량. "
+                       "배선을 전기적으로 확인해 이상이 없다면 (2) 입니다. "
+                       "(INT2 대조군 결과를 함께 보세요)");
         return false;
     case PIN_DRIVEN_LOW:
         set_result(4, R_FAIL, d,

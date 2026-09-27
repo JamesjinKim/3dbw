@@ -1,6 +1,6 @@
 {
   "kind": "iis3dwb-boardcheck",
-  "built_at": "2026-09-23T14:36:25+09:00",
+  "built_at": "2026-09-23T15:13:25+09:00",
   "chip": "esp32s3",
   "write_flash_args": [
     "--flash_mode",
@@ -24,8 +24,8 @@
     {
       "offset": "0x10000",
       "file": "iis3dwb_boardcheck.bin",
-      "size": 233792,
-      "sha256": "cd5b22a2f68541c8c8f7b6ab38a571e45b7e257f3a5d86b0acdb14afc7861d79"
+      "size": 234368,
+      "sha256": "ebe29dd478d2216ae83426eb707be5bc9dd005324c263930c05f19107e0990d3"
     },
     {
       "offset": "0x8000",

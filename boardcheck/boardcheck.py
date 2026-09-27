@@ -4,7 +4,9 @@
 보드를 USB 로 꽂고 실행하면 검사 펌웨어를 굽고, 부팅 로그에서 판정을 읽어
 사람이 읽는 요약과 종료 코드로 돌려준다. 로그는 results/ 에 보관된다.
 
+    ./boardcheck.py --list         # 연결된 보드를 MAC 으로 확인 (여러 대일 때)
     ./boardcheck.py                # 굽고 검사
+    ./boardcheck.py --all          # 꽂힌 모든 보드를 차례로 검사 (2대 이상일 때)
     ./boardcheck.py --no-flash     # 이미 검사 펌웨어가 있는 보드를 재검사
     ./boardcheck.py --port /dev/ttyUSB0
     ./boardcheck.py --loop         # 보드를 갈아 끼우며 연속 검사
@@ -37,10 +39,11 @@ for cand in (os.path.join(HERE, "lib"),                     # 배포 사본
 
 try:
     import esp_flash
+    import ports
     import usb_reset
 except ImportError as e:            # pragma: no cover
     sys.stderr.write(
-        "❌ esp_flash / usb_reset 모듈을 찾지 못했습니다 (%s).\n"
+        "❌ esp_flash / ports / usb_reset 모듈을 찾지 못했습니다 (%s).\n"
         "   이 폴더 옆에 sensor-setup-py/ 가 있거나, boardcheck/lib/ 에 사본이 있어야 합니다.\n" % e)
     sys.exit(3)
 
@@ -77,6 +80,21 @@ def pad(s, width):
 
 
 # ===================== 포트 =====================
+#
+# 열거는 sensor-setup-py/ports.py 를 쓴다. by-id 를 쓰면 두 대가 1개로 보여
+# 한 대를 놓치고, 그 상태의 "자동 감지" 는 엉뚱한 보드를 굽는다 — 그 판단과
+# 구현을 한 곳에만 두기 위해 공용 모듈로 뽑았다. (esp_flash·usb_reset 과 같은 경로)
+
+
+def list_candidates():
+    """[(장치경로, 물리슬롯)] — 슬롯 순."""
+    return [(b.device, b.slot) for b in ports.list_ports()]
+
+
+def short_slot(slot):
+    i = slot.rfind("-usb-")
+    return slot[i + 1:] if i >= 0 else slot
+
 
 def find_port(explicit=None):
     """검사할 보드의 시리얼 포트를 고른다."""
@@ -85,26 +103,43 @@ def find_port(explicit=None):
             raise RuntimeError("포트를 찾을 수 없습니다: %s" % explicit)
         return explicit
 
-    # /dev/serial/by-id 는 재연결로 번호가 바뀌어도 같은 이름을 유지한다.
-    by_id = "/dev/serial/by-id"
-    cands = []
-    if os.path.isdir(by_id):
-        for name in sorted(os.listdir(by_id)):
-            cands.append(os.path.realpath(os.path.join(by_id, name)))
-    if not cands:
-        import glob
-        # ttyAMA*/serial0 은 라즈베리파이 자체 UART 라 후보에서 뺀다.
-        cands = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
-
+    cands = list_candidates()
     if not cands:
         raise RuntimeError(
             "USB 시리얼 포트를 찾지 못했습니다.\n"
             "  · 보드가 꽂혀 있는지, 충전 전용 케이블이 아닌지 확인하세요\n"
             "  · dmesg | tail 로 장치 인식 여부를 볼 수 있습니다")
     if len(cands) > 1:
+        # 어느 보드인지 모르는 채로 굽지 않는다. 고를 수 있도록 안내한다.
+        lines = ["  %-14s %s" % (d, short_slot(s)) for d, s in cands]
         raise RuntimeError(
-            "포트가 여러 개입니다. --port 로 지정하세요:\n  " + "\n  ".join(cands))
-    return cands[0]
+            "보드가 %d대 꽂혀 있습니다. 검사할 포트를 지정하세요:\n%s\n\n"
+            "  어느 것이 어느 보드인지 모르겠다면 MAC 으로 확인하세요:\n"
+            "    ./boardcheck.py --list\n"
+            "  전부 차례로 검사하려면:\n"
+            "    ./boardcheck.py --all"
+            % (len(cands), "\n".join(lines)))
+    return cands[0][0]
+
+
+def cmd_list():
+    """연결된 보드를 MAC 과 함께 보여준다.
+
+    MAC 조회는 esptool 로 부트로더에 진입하므로 보드가 리셋된다. 굽지는 않는다.
+    """
+    boards = ports.list_ports()
+    if not boards:
+        print("연결된 USB 시리얼 포트가 없습니다.")
+        return 1
+    print("연결된 보드 %d대 — MAC 을 읽는 중입니다 (포트당 약 3초)\n" % len(boards))
+    ports.read_macs(boards)
+    print("  %-14s %-12s %s" % ("장치", "USB 포트", "MAC"))
+    for b in boards:
+        print("  %-14s %-12s %s"
+              % (b.device, b.short_slot,
+                 b.mac or ("읽기 실패 — %s" % (b.error or "")[:40])))
+    print("\n검사:  ./boardcheck.py --port <장치>   또는   --all")
+    return 0
 
 
 # ===================== 플래시 =====================
@@ -247,8 +282,18 @@ def save_log(lines, result, items):
 
 # ===================== 한 보드 검사 =====================
 
-def run_once(args):
-    port = find_port(args.port)
+def mac_of(items):
+    """검사 항목에서 MAC 을 뽑는다 (1번 항목의 detail 에 들어 있다)."""
+    for it in items:
+        m = re.search(r"MAC ([0-9A-Fa-f:]{17})", it["detail"])
+        if m:
+            return m.group(1).lower()
+    return None
+
+
+def run_once(args, port=None):
+    """보드 한 대를 검사한다. (종료코드, 판정, MAC) 을 돌려준다."""
+    port = port or find_port(args.port)
     print("포트: %s" % port)
 
     if not args.no_flash:
@@ -284,7 +329,7 @@ def run_once(args):
         print("  · 보드가 부팅 중 리셋을 반복하는지 위 로그를 확인하세요")
         print("  · 검사 펌웨어가 아닌 다른 펌웨어가 들어 있을 수 있습니다 (--no-flash 를 뺐는지 확인)")
         print("  로그: %s" % log_path)
-        return 3
+        return 3, None, mac_of(items)
 
     color = C["pass"] if result == "PASS" else (C["warn"] if result == "WARN" else C["fail"])
     print("%s%s╔══════════════════════════════════════╗%s" % (C["bold"], color, C["off"]))
@@ -297,7 +342,50 @@ def run_once(args):
         print("  %s%-4s%s  %s %s" % (c, it["verdict"], C["off"],
                                      pad(it["name"], 18), it["detail"]))
     print("  로그: %s" % log_path)
-    return EXIT.get(result, 3)
+    return EXIT.get(result, 3), result, mac_of(items)
+
+
+def cmd_all(args):
+    """꽂혀 있는 보드를 **차례로** 검사하고 요약표를 낸다.
+
+    동시에 하지 않는다 — esptool 은 포트를 독점하고, USB 스톨 복구가 포트 번호를
+    재배치해 다른 보드의 경로를 바꿀 수 있다. 한 대가 실패해도 나머지는 계속
+    검사한다(한 번 꽂아 최대한 많이 알기 위해). 종료코드는 가장 나쁜 결과를 따른다.
+    """
+    cands = list_candidates()
+    if not cands:
+        sys.stderr.write("❌ 연결된 USB 시리얼 포트가 없습니다.\n")
+        return 3
+    print("=" * 64)
+    print(" 보드 %d대를 차례로 검사합니다 (동시 진행하지 않습니다)" % len(cands))
+    print("=" * 64)
+
+    rows = []
+    for i, (dev, slot) in enumerate(cands, 1):
+        print("\n%s[%d/%d] %s  (%s)%s"
+              % (C["bold"], i, len(cands), dev, short_slot(slot), C["off"]))
+        print("-" * 64)
+        try:
+            rc, result, mac = run_once(args, port=dev)
+        except (RuntimeError, esp_flash.EsptoolError, usb_reset.UsbResetError) as e:
+            sys.stderr.write("❌ %s\n" % e)
+            rc, result, mac = 3, None, None
+        rows.append((mac, short_slot(slot), dev, result, rc))
+
+    print("\n" + "=" * 64)
+    print(" 요약")
+    print("=" * 64)
+    print("  %-19s %-12s %-14s %s" % ("MAC", "USB 포트", "장치", "판정"))
+    worst = 0
+    for mac, slot, dev, result, rc in rows:
+        label = result or "미완료"
+        c = (C["pass"] if rc == 0 else C["warn"] if rc == 1 else C["fail"])
+        print("  %-19s %-12s %-14s %s%s%s"
+              % (mac or "?", slot, dev, c, label, C["off"]))
+        worst = max(worst, rc)
+    ok = sum(1 for r in rows if r[4] == 0)
+    print("\n  PASS %d / %d" % (ok, len(rows)))
+    return worst
 
 
 def main(argv=None):
@@ -305,6 +393,10 @@ def main(argv=None):
         description="IIS3DWB 센서 보드 수입검사",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__)
+    p.add_argument("--list", action="store_true",
+                   help="연결된 보드를 MAC 과 함께 보여준다 (검사하지 않음)")
+    p.add_argument("--all", action="store_true",
+                   help="꽂혀 있는 모든 보드를 차례로 검사하고 요약표를 낸다")
     p.add_argument("--port", help="시리얼 포트 (기본: 자동 탐지)")
     p.add_argument("--no-flash", action="store_true",
                    help="굽지 않고 현재 보드의 검사 결과만 읽는다 (재부팅해 재검사)")
@@ -315,9 +407,15 @@ def main(argv=None):
     p.add_argument("--verbose", action="store_true", help="esptool 출력을 모두 표시")
     args = p.parse_args(argv)
 
+    if args.list:
+        return cmd_list()
+
+    if args.all:
+        return cmd_all(args)
+
     if not args.loop:
         try:
-            return run_once(args)
+            return run_once(args)[0]
         except (RuntimeError, esp_flash.EsptoolError, usb_reset.UsbResetError) as e:
             sys.stderr.write("\n❌ %s\n" % e)
             return 3
@@ -330,7 +428,7 @@ def main(argv=None):
             print("=" * 64)
             input()
             try:
-                rc = run_once(args)
+                rc = run_once(args)[0]
                 key = {0: "PASS", 1: "WARN", 2: "FAIL"}.get(rc, "ERROR")
             except (RuntimeError, esp_flash.EsptoolError, usb_reset.UsbResetError) as e:
                 sys.stderr.write("\n❌ %s\n" % e)

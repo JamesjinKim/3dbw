@@ -108,10 +108,20 @@ typedef enum {
 } iis3dwb_fs_xl_t;
 
 /* CTRL3_C (0x12) - Control register 3 */
+/* 데이터시트 Table 31 (DS12569 Rev 6, 9.12):
+ *   bit7 BOOT · bit6 BDU · bit5 H_LACTIVE · bit4 PP_OD · bit3 SIM ·
+ *   bit2 IF_INC · bit1 0(고정) · bit0 SW_RESET
+ *
+ * H_LACTIVE 와 PP_OD 가 INT1/INT2 핀의 전기적 동작을 정한다. 둘 다 0(기본값)이면
+ * **active high · push-pull** 이라 센서가 핀을 HIGH 로 능동 구동하고 외부 풀업이
+ * 필요 없다. 이 프로젝트는 기본값을 그대로 쓴다 (init 이 BDU|IF_INC 만 쓴다).
+ */
 #define IIS3DWB_CTRL3_C_BOOT        (1 << 7) /**< Reboot memory content */
 #define IIS3DWB_CTRL3_C_BDU         (1 << 6) /**< Block data update */
+#define IIS3DWB_CTRL3_C_H_LACTIVE   (1 << 5) /**< 0=INT 핀 active high, 1=active low */
+#define IIS3DWB_CTRL3_C_PP_OD       (1 << 4) /**< 0=push-pull, 1=open-drain */
+#define IIS3DWB_CTRL3_C_SIM         (1 << 3) /**< 0=4선 SPI, 1=3선 SPI */
 #define IIS3DWB_CTRL3_C_IF_INC      (1 << 2) /**< Auto-increment address */
-#define IIS3DWB_CTRL3_C_SIM         (1 << 0) /**< SPI serial interface mode */
 #define IIS3DWB_CTRL3_C_SW_RESET    (1 << 0) /**< Software reset */
 
 /* CTRL6_C (0x15) - Control register 6 */
