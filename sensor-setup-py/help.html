@@ -94,7 +94,7 @@
 
 <h3>순서가 중요합니다</h3>
 <pre><code>① 보드 진단  →  ② 펌웨어 굽기  →  ③ 설정 주입  →  ④ 데이터 수집
-  입고 검사        ─── 이 설명서 ───        수집기 패키지</code></pre>
+  입고 검사        ─── 이 설명서 ───        SHT 진동센서 수집</code></pre>
 
 <div class="warn">
   <b>보드 진단(입고 검사)은 이 패키지에 들어 있지 않습니다.</b> 출하 전에 제조·배포
@@ -314,7 +314,7 @@ bash run.sh</code></pre>
     <tr><td>두 번째</td><td>192.168.0.77</td><td class="num">9001</td></tr>
   </table>
   <p style="margin:10px 0 0">받는 쪽도 포트마다 하나씩 띄웁니다.</p>
-  받는 쪽(수집기 패키지 폴더에서):
+  받는 쪽(SHT 진동센서 수집 폴더에서):
   <pre style="margin:8px 0 0"><code>bash run.sh udp --port 9000 --out sensor1.csv &amp;
 bash run.sh udp --port 9001 --out sensor2.csv &amp;</code></pre>
   <p style="margin:10px 0 0" class="k">USB 직결(<code>transport=2</code>)에서는
@@ -336,10 +336,10 @@ bash run.sh udp --port 9001 --out sensor2.csv &amp;</code></pre>
   <tr><th>선택</th><th>쓰는 경우</th><th>받는 방법</th></tr>
   <tr><td><b>USB 직결 (시리얼)</b></td>
       <td>WiFi 가 없거나 불안정한 현장. 최대 26.6 kHz.</td>
-      <td>수집기 패키지의 <code>bash run.sh</code></td></tr>
+      <td>SHT 진동센서 수집의 <code>bash run.sh</code></td></tr>
   <tr><td><b>WiFi (UDP)</b></td>
       <td>케이블 없이 떨어진 곳에 둘 때</td>
-      <td>수집기 패키지의 <code>bash run.sh udp</code></td></tr>
+      <td>SHT 진동센서 수집의 <code>bash run.sh udp</code></td></tr>
 </table>
 <p class="k">둘은 배타 선택입니다. USB 직결을 고르면 보드는 WiFi 에 접속하지 않습니다.</p>
 
@@ -350,11 +350,8 @@ bash run.sh udp --port 9001 --out sensor2.csv &amp;</code></pre>
   <b>주파수 분석(FFT)이 목적이라면 26.6 kHz 를 고르십시오.</b>
   더 낮은 설정은 펌웨어가 저역통과 필터 없이 샘플을 솎아내는 방식이라,
   <b>높은 주파수 성분이 낮은 주파수 자리로 접혀 들어옵니다</b>(에일리어싱).
-  예를 들어 3.3 kHz 로 받으면 실제 4 kHz 진동이 <b>667 Hz 에 없는 봉우리</b>로
-  나타납니다.
   <p style="margin:10px 0 0">RMS·피크 같은 <b>전체 진동량만</b> 보신다면 낮은 레이트도
-  정확합니다. 자세한 근거는 수집기 설명서
-  (수집기 패키지의 <code>help.html</code>) 5장에 있습니다.</p>
+  괜찮습니다. 자세한 내용은 <b>SHT 진동센서 수집</b> 도움말 5장에 있습니다.</p>
 </div>
 
 <h3>데이터 읽기 방식</h3>
@@ -405,7 +402,7 @@ bash run.sh udp --port 9001 --out sensor2.csv &amp;</code></pre>
 
 <div class="bad">
   <b><code>자격증명 출처: Kconfig — 개발 빌드, NVS 무시 ❌</code></b> 가 보이면
-  번들 펌웨어가 <b>개발용</b>입니다. 이 펌웨어는 설정툴의 WiFi 입력을 무시합니다.
+  번들 펌웨어가 <b>개발용</b>입니다. 이 펌웨어는 이 프로그램에서 입력한 WiFi 를 무시합니다.
   배포 담당자에게 정상 패키지를 요청하십시오. (도구가 굽기 전에 막지만,
   다른 경로로 구운 보드라면 이 메시지로 드러납니다)
 </div>
@@ -456,7 +453,7 @@ bash run.sh udp --port 9001 --out sensor2.csv &amp;</code></pre>
           <code>bash install.sh --check</code> 로 무엇이 빠졌는지 볼 수 있습니다.</td></tr>
   <tr><td>주입은 됐는데 데이터가 안 온다</td>
       <td>전송 방식과 받는 방법이 맞는지 보세요. USB 직결이면
-          수집기 패키지의 <code>bash run.sh</code>, WiFi 면 <code>bash run.sh udp</code> 입니다.</td></tr>
+          SHT 진동센서 수집의 <code>bash run.sh</code>, WiFi 면 <code>bash run.sh udp</code> 입니다.</td></tr>
   <tr><td>WiFi 2대인데 유실이 크다</td>
       <td><b>두 센서의 수신 포트가 같은지</b> 확인하세요 →
           <a href="#two">4장</a></td></tr>
@@ -492,7 +489,7 @@ python3 provision_log.py 9c:13:9e:90:a9:f0  # 한 보드만</code></pre>
 
 <footer>
   SHT 진동센서 설정 · 이 문서는 인터넷 없이 열립니다 ·
-  수집·분석 방법은 수집기 패키지의 <code>help.html</code> 을 보십시오.
+  수집·분석 방법은 <b>SHT 진동센서 수집</b> 도움말을 보십시오.
 </footer>
 
 </div>
