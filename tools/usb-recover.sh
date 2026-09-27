@@ -15,8 +15,13 @@
 #    재발 방지는 /etc/udev/rules.d/99-iis3dwb-no-modemmanager.rules 참고)
 #
 # 사용법:
-#   ./tools/usb-recover.sh              # 연결된 ESP32 계열 브리지를 찾아 리셋
-#   ./tools/usb-recover.sh 04b4:0003    # VID:PID 직접 지정
+#   ./tools/usb-recover.sh              # 연결된 ESP32 계열 브리지를 찾아 리셋 (1대일 때)
+#   ./tools/usb-recover.sh /dev/iis3dwb2  # 포트로 지정 — 같은 기종이 여러 대일 때
+#   ./tools/usb-recover.sh 04b4:0003    # VID:PID 직접 지정 (1대일 때)
+#
+# 같은 기종 브리지가 여러 대 꽂혀 있으면 VID:PID 로는 구분할 수 없다. 예전에는
+# 그중 첫 번째를 말없이 리셋해, 멈춘 쪽이 아닌 멀쩡한 센서가 리셋되곤 했다.
+# 이제는 포트를 지정하라고 알리고 멈춘다.
 #
 set -euo pipefail
 
@@ -31,21 +36,43 @@ KNOWN_IDS=(
 
 TARGET="${1:-}"
 
+# 포트(/dev/...)로 지정 — sysfs 를 거슬러 올라가 그 포트의 USB 장치를 찾는다
+if [ -n "$TARGET" ] && [ "${TARGET#/dev/}" != "$TARGET" ]; then
+  [ -e "$TARGET" ] || { echo "❌ $TARGET 가 없습니다" >&2; exit 1; }
+  TTY="$(basename "$(readlink -f "$TARGET")")"
+  D="$(readlink -f "/sys/class/tty/$TTY/device")"
+  while [ -n "$D" ] && [ "$D" != "/" ] && [ ! -f "$D/busnum" ]; do D="$(dirname "$D")"; done
+  [ -f "$D/busnum" ] || { echo "❌ $TARGET 의 USB 장치를 찾지 못했습니다" >&2; exit 1; }
+  BUS="$(printf '%03d' "$(cat "$D/busnum")")"
+  DEVN="$(printf '%03d' "$(cat "$D/devnum")")"
+  LINE="$(lsusb -s "$BUS:$DEVN")"
+fi
+
 find_device() {
   local id
-  if [ -n "$TARGET" ]; then
-    lsusb | grep -i "$TARGET" | head -1 && return 0 || return 1
-  fi
-  for id in "${KNOWN_IDS[@]}"; do
-    if lsusb | grep -qi "$id"; then
-      lsusb | grep -i "$id" | head -1
-      return 0
+  local ids=("${KNOWN_IDS[@]}") n
+  [ -n "$TARGET" ] && ids=("$TARGET")
+  for id in "${ids[@]}"; do
+    n="$(lsusb | grep -ci "$id" || true)"
+    [ "$n" -eq 0 ] && continue
+    if [ "$n" -gt 1 ]; then
+      echo "❌ 같은 기종($id)이 ${n}대 꽂혀 있어 어느 것을 리셋할지 알 수 없습니다." >&2
+      echo "   멈춘 센서의 포트를 지정하세요:" >&2
+      for p in /dev/iis3dwb* /dev/ttyACM* /dev/ttyUSB*; do
+        [ -e "$p" ] && echo "     $0 $p" >&2
+      done
+      return 2
     fi
+    lsusb | grep -i "$id"
+    return 0
   done
   return 1
 }
 
-if ! LINE="$(find_device)"; then
+rc=0
+[ -n "${LINE:-}" ] || LINE="$(find_device)" || rc=$?
+[ $rc -eq 2 ] && exit 1
+if [ $rc -ne 0 ]; then
   echo "❌ ESP32 계열 USB 시리얼 장치를 찾지 못했습니다. 현재 USB 목록:" >&2
   lsusb >&2
   echo "   VID:PID 를 직접 지정하려면: $0 04b4:0003" >&2
@@ -56,6 +83,16 @@ fi
 BUS="$(echo "$LINE"  | awk '{print $2}')"
 DEVN="$(echo "$LINE" | awk '{gsub(":","",$4); print $4}')"
 NODE="/dev/bus/usb/$BUS/$DEVN"
+
+# 리셋 **전에** 이 장치의 sysfs 경로(예: /sys/bus/usb/devices/1-1.2)를 잡아 둔다.
+# 이 경로는 꽂힌 구멍으로 정해져 리셋 뒤에도 같다. 재열거 중에 찾으면 놓친다.
+SYSDEV=""
+for d in /sys/bus/usb/devices/*; do
+  [ -f "$d/busnum" ] && [ -f "$d/devnum" ] || continue
+  if [ "$(cat "$d/busnum")" = "$((10#$BUS))" ] && [ "$(cat "$d/devnum")" = "$((10#$DEVN))" ]; then
+    SYSDEV="$d"; break
+  fi
+done
 
 echo "대상: $LINE"
 echo "노드: $NODE"
@@ -82,12 +119,16 @@ finally:
 PY
 
 echo "▶ 포트 재생성 대기..."
+# 리셋한 그 장치의 tty 가 다시 생겨야 복구다. 아무 ttyACM 이나 보고 판정하면
+# 여러 대가 꽂힌 환경에서 다른 센서 때문에 늘 즉시 "복구" 로 나온다.
+sleep 1
 for i in $(seq 1 15); do
-  for p in /dev/ttyACM* /dev/ttyUSB*; do
-    if [ -e "$p" ]; then
+  for t in "$SYSDEV"/*/tty/* "$SYSDEV"/*/tty*; do
+    p="/dev/$(basename "$t")"
+    if [ -n "$SYSDEV" ] && [ -e "$t" ] && [ -e "$p" ]; then
       echo "  ✓ 포트 복구: $p"
       echo ""
-      echo "이제 다시 시도하세요:  ./run.sh    또는    idf.py -p $p flash"
+      echo "이제 다시 시도하세요 (설정툴에서 다시 실행, 또는 idf.py -p $p flash)"
       exit 0
     fi
   done

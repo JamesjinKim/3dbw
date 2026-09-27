@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IIS3DWB 센서 설정 툴 (tkinter GUI)
+SHT 진동센서 설정 (tkinter GUI) — 공식 명칭. 예전 이름: IIS3DWB 센서 설정 툴
 
 한 창에서 아래를 순서대로 처리한다.
 
   ①  펌웨어 굽기   번들된 배포 펌웨어 3종을 디바이스에 쓰고 부팅을 확인
   ②  설정 주입     입력값으로 NVS(0x9000)를 만들어 주입하고 되울린 값을 대조
 
-부가 기능: 디바이스 확인 · 현재 설정 읽기 · 공장 초기화 · 로그 저장
+부가 기능: 현재 설정 읽기 · 공장 초기화 · 로그 저장
 
 요구 환경: 라즈베리파이(또는 리눅스) · Python 3.8+ · tkinter · esptool
            (nvs_gen.py 가 순수 파이썬이라 NVS 생성에는 ESP-IDF 가 필요 없다)
@@ -30,17 +30,30 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+# 배포 패키지는 pyserial·esptool 을 vendor/ 에 소스째 넣어 온다 (폐쇄망 대비).
+# 시스템에 설치된 것보다 먼저 잡히도록 앞에 넣는다.
+if (HERE / "vendor").is_dir():
+    sys.path.insert(0, str(HERE / "vendor"))
+
+try:
+    import tkinter as tk
+    from tkinter import ttk, messagebox, filedialog
+except ImportError as _e:
+    # tkinter 는 파이썬 소스가 아니라 OS 의 Tk 라이브러리에 묶여 있어 패키지에
+    # 넣어 갈 수 없다. Raspberry Pi OS **Lite**(화면 없는 이미지)에는 빠져 있다.
+    sys.exit("❌ 화면(GUI) 라이브러리 tkinter 가 이 OS 에 없습니다 (%s).\n"
+             "   Raspberry Pi OS Desktop 이미지에는 기본으로 들어 있습니다.\n"
+             "   Lite 이미지라면 python3-tk 패키지를 오프라인으로 설치해야 합니다." % _e)
 
 import nvs_gen          # 순수 파이썬 NVS 생성기 (Rust nvs.rs 와 byte-exact 검증됨)
 import esp_flash        # esptool 래퍼 (스텁 누락 우회·스톨 감지 포함)
 import fw_manifest      # 번들 펌웨어 manifest 파싱·무결성 검증
 import nvs_read         # 디바이스의 현재 NVS 를 읽어 파싱
+import ports as ports_mod   # USB 물리 슬롯 기준 보드 열거 (boardcheck 와 공용)
+import provision_log    # 어느 보드(MAC)에 무엇을 넣었는지 이력
 import boot_log         # 부팅 로그 판정
 import usb_reset        # USB 스톨 복구
 
@@ -66,17 +79,20 @@ LOG_MAX_LINES = 2000
 # 진행률 막대가 따로 있으므로 로그창에는 띄우지 않는다.
 PROGRESS_RE = re.compile(r"(?:\d+\s*\(\s*\d+\s*%\)\s*)+")
 
-# ---- 선택지 (gui_preview.py 에서 확정한 문구를 유지) ----
+# ---- 선택지 (화면 문구는 help.html 과 맞춰 둔다) ----
 TRANSPORT_OPTIONS = [
     ("WiFi (UDP) · 라즈베리파이로 전송", 0),
     ("USB 직결 (시리얼) · WiFi 미사용", 2),
 ]
+# 기본은 1 kHz — 데이터량을 줄이기 위한 결정 (2026-09-26). 펌웨어도 NVS 에 값이
+# 없으면 1 kHz 다 (config_manager.c). 주파수 분석이 필요하면 현장에서 26.6 kHz 를
+# 고른다 — 낮은 레이트는 필터 없이 솎아 에일리어싱이 생긴다 (help.html 5장).
 RATE_OPTIONS = [
-    ("3.3 kHz · 일반 모니터링 (기본·권장)", 1),
+    ("1 kHz · 데이터량 최소 (기본)", 0),
+    ("3.3 kHz · 일반 모니터링", 1),
     ("6.6 kHz · 중속 분석", 2),
     ("13.3 kHz · 고속 분석", 3),
-    ("26.6 kHz · 정밀 진동분석 (최대)", 4),
-    ("1 kHz · 안정 수신 (저부담)", 0),
+    ("26.6 kHz · 주파수 분석(FFT) · 최대", 4),
 ]
 # 읽기 방식: 인터럽트가 기본, 폴링은 선택 (사용자 결정).
 # boardcheck 로 INT1 배선이 확인된 보드에서는 인터럽트가 26.6kHz 전 속도를 낸다.
@@ -140,30 +156,8 @@ def build_blank_nvs(out_bin):
         f.write(b"\xFF" * NVS_SIZE)
 
 
-# ===================== 포트 =====================
-def list_serial_ports():
-    """USB 로 연결된 시리얼 포트 경로만 반환.
-
-    라즈베리파이 내장 UART(`/dev/ttyAMA*`, `/dev/serial0`)는 IIS3DWB 와
-    무관하므로 제외해 사용자가 헷갈리지 않게 한다.
-    """
-    ports = []
-    try:
-        from serial.tools import list_ports
-        for p in list_ports.comports():
-            hwid = (p.hwid or "").upper()
-            if "USB" not in hwid and "VID" not in hwid:
-                continue
-            ports.append(p.device)
-    except Exception:
-        dev = Path("/dev")
-        if dev.exists():
-            for entry in dev.iterdir():
-                name = str(entry)
-                if any(h in name for h in
-                       ("/dev/ttyACM", "/dev/ttyUSB", "/dev/cu.usb")):
-                    ports.append(name)
-    return sorted(set(ports))
+# (포트 열거는 ports.py 로 옮겼다 — boardcheck 와 같은 구현을 쓴다.
+#  by-id 를 쓰면 보드 2대가 1개로 보여 한 대를 놓친다. 그 판단을 한 곳에만 둔다.)
 
 
 # ===================== 입력값 기억 =====================
@@ -198,11 +192,25 @@ def save_prefs(cfg, remember_password):
         pass  # 저장 실패해도 기능엔 영향 없음
 
 
+class StepError(Exception):
+    """한 단계가 실패한 이유. 제목·본문을 그대로 사용자에게 보인다.
+
+    순차 진행에서 **다음 보드로 넘어가지 않고 멈추는** 신호로도 쓰인다.
+    `warn=True` 는 "치명적이진 않으나 확인이 필요" 를 뜻한다.
+    """
+
+    def __init__(self, title, body, warn=False):
+        super().__init__(body)
+        self.title = title
+        self.body = body
+        self.warn = warn
+
+
 # ===================== GUI =====================
 class SetupApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("IIS3DWB 센서 설정 툴")
+        self.title("SHT 진동센서 설정")
         # 제목줄이 어떤 이유로든 가려져도 키보드로 닫을 수 있게 한다.
         for seq in ("<Escape>", "<Control-q>", "<Control-w>"):
             self.bind(seq, lambda _e: self.destroy())
@@ -251,52 +259,74 @@ class SetupApp(tk.Tk):
 
         r = 0
 
-        # ===== 헤더: 번들 펌웨어 정보 =====
+        # ===== 헤더 =====
+        # 도움말을 **맨 위 오른쪽**에 둔다. 시작하기 전에 읽어야 하는 것이라
+        # 화면 아래에 있으면 눈에 들어오지 않는다. 화면의 안내 문구는 최소로
+        # 줄이고 자세한 설명은 전부 도움말로 넘겼다.
         hdr = ttk.Frame(body)
-        hdr.grid(row=r, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 2))
-        ttk.Label(hdr, text="IIS3DWB 진동센서 설정",
+        hdr.grid(row=r, column=0, columnspan=2, sticky="ew", padx=12, pady=(10, 2))
+        ttk.Button(hdr, text="도움말 — 먼저 읽어보세요",
+                   command=self.on_help).pack(side="right", anchor="n")
+        left = ttk.Frame(hdr); left.pack(side="left", anchor="w")
+        ttk.Label(left, text="SHT 진동센서 설정",
                   font=("", 15, "bold")).pack(anchor="w")
         if self.manifest:
-            ttk.Label(hdr, text=fw_manifest.fw_summary(self.manifest),
+            ttk.Label(left, text="펌웨어 %s · 패키지 %s"
+                                 % (self.manifest.get("app_version", "?"),
+                                    self.manifest.get("package_version", "?")),
                       foreground="#555").pack(anchor="w")
-            ttk.Label(hdr, text="패키지 %s  ·  굽기 직전 무결성을 확인합니다"
-                                % self.manifest.get("package_version", "?"),
-                      foreground="#2a7").pack(anchor="w")
         else:
-            why = self.manifest_error or "firmware/manifest.json 을 찾지 못했습니다"
-            ttk.Label(hdr, text="번들 펌웨어 없음 — ① 펌웨어 굽기 사용 불가",
+            ttk.Label(left, text="⚠ 번들 펌웨어 없음 — ① 펌웨어 굽기 사용 불가",
                       foreground="#a33").pack(anchor="w")
-            ttk.Label(hdr, text=why, foreground="#666",
-                      wraplength=470, justify="left").pack(anchor="w")
+            ttk.Label(left, text=self.manifest_error or
+                      "firmware/manifest.json 을 찾지 못했습니다",
+                      foreground="#666", wraplength=430,
+                      justify="left").pack(anchor="w")
         r += 1
         ttk.Separator(body, orient="horizontal").grid(
             row=r, column=0, columnspan=2, sticky="ew", pady=8); r += 1
 
-        # ===== 포트 =====
-        ttk.Label(body, text="USB 포트").grid(row=r, column=0, sticky="w", **PAD)
-        pf = ttk.Frame(body); pf.grid(row=r, column=1, sticky="w", **PAD)
-        self.port_var = tk.StringVar()
-        self.port_cb = ttk.Combobox(pf, textvariable=self.port_var, width=22,
-                                    state="readonly")
-        self.port_cb.pack(side="left")
-        self.refresh_btn = ttk.Button(pf, text="⟳", width=3,
-                                      command=self.refresh_ports)
-        self.refresh_btn.pack(side="left", padx=4)
+        # ===== 진동센서 목록 =====  (화면 이름. 예전: 대상 보드)
+        #
+        # 예전에는 포트 콤보박스 하나(`/dev/ttyACM0`)였다. 보드를 두 대 꽂으면
+        # **작업자가 어느 보드에 굽는지 확신할 수 없다** — 브리지칩에 고유
+        # 일련번호가 없어 포트 번호만으로는 보드를 특정하지 못하기 때문이다.
+        # 그래서 목록으로 바꾸고 MAC·USB 슬롯·직전 작업 이력을 함께 보여준다.
+        bl = ttk.LabelFrame(body, text=" 진동센서 목록 ")
+        bl.grid(row=r, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 4))
         r += 1
 
-        bf = ttk.Frame(body)
-        bf.grid(row=r, column=1, sticky="w", padx=12, pady=(0, 4))
-        self.detect_btn = ttk.Button(bf, text="디바이스 확인", command=self.on_detect)
-        self.detect_btn.pack(side="left")
+        btop = ttk.Frame(bl)
+        btop.grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 2))
+        self.find_btn = ttk.Button(btop, text="MAC 주소 확인",
+                                   command=self.on_find_boards)
+        self.find_btn.pack(side="left")
+        self.refresh_btn = ttk.Button(btop, text="목록만 갱신", width=12,
+                                      command=self.refresh_ports)
+        self.refresh_btn.pack(side="left", padx=6)
+
+        cols = ("slot", "dev", "mac", "state")
+        self.tree = ttk.Treeview(bl, columns=cols, show="headings", height=3,
+                                 selectmode="browse")
+        for c, t, w in (("slot", "USB 포트", 110), ("dev", "장치", 90),
+                        ("mac", "MAC", 160), ("state", "이력", 190)):
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w, anchor="w", stretch=False)
+        self.tree.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
+        self.tree.bind("<<TreeviewSelect>>", lambda _e: self._on_board_select())
+        self.boards = []            # ports.Board 목록 (표시 순서와 같다)
+
+        # 1줄 고정 — 대상 MAC 은 2대 작업에서 필수 정보라 남기고, 나머지 설명은 뺐다
+        self.board_hint = tk.Label(bl, text="", fg="#555", height=1, anchor="w")
+        self.board_hint.grid(row=2, column=0, sticky="w", padx=10, pady=(0, 6))
+
+        bf = ttk.Frame(bl)
+        bf.grid(row=3, column=0, sticky="w", padx=10, pady=(0, 8))
+        # '디바이스 확인' 버튼은 뺐다 (2026-09-26) — MAC 주소 확인와 같은 esptool 호출이라
+        # 둘 다 눌러야 하는지 헷갈렸다. 칩·플래시 정보는 MAC 주소 확인가 로그에 남긴다.
         self.read_btn = ttk.Button(bf, text="현재 설정 읽기",
                                    command=self.on_read_settings)
-        self.read_btn.pack(side="left", padx=6)
-        r += 1
-        ttk.Label(body,
-                  text="‘현재 설정 읽기’ 를 누르면 디바이스에 저장된 값을 아래에 채웁니다.\n"
-                       "값이 없는 항목은 비워 두고 직접 입력하시면 됩니다.",
-                  foreground="#666", justify="left").grid(
-            row=r, column=0, columnspan=2, sticky="w", padx=12); r += 1
+        self.read_btn.pack(side="left")
 
         ttk.Separator(body, orient="horizontal").grid(
             row=r, column=0, columnspan=2, sticky="ew", pady=8); r += 1
@@ -311,11 +341,8 @@ class SetupApp(tk.Tk):
         self.tr_cb.grid(row=r, column=1, sticky="w", **PAD)
         self.tr_cb.bind("<<ComboboxSelected>>", lambda e: self._on_transport())
         r += 1
-        # 높이 3줄 고정: 전송 방식을 바꿀 때 안내 문구 줄 수가 달라져도 폼 전체
-        # 높이가 변하지 않게 한다 (창이 흔들리거나 스크롤바가 생겼다 사라지는 것 방지).
-        self.tr_hint = tk.Label(body, text="", fg="#666", height=3,
-                                wraplength=470, justify="left", anchor="nw")
-        self.tr_hint.grid(row=r, column=0, columnspan=2, sticky="w", padx=12); r += 1
+        # 예전에는 여기 '수신: 수집기 패키지의 …' 한 줄이 있었다. 설정툴과 수집기는
+        # 별개 배포물이라 뺐다 (2026-09-27). 받는 방법은 수집기 패키지의 도움말에 있다.
 
         # ===== WiFi / 서버 =====
         self.wifi_frame = ttk.LabelFrame(body, text=" WiFi 전송 설정 ")
@@ -336,19 +363,23 @@ class SetupApp(tk.Tk):
             e = ttk.Entry(self.wifi_frame, textvariable=var, width=26, show=show)
             e.grid(row=i, column=1, sticky="w", padx=10, pady=3)
             self.wifi_widgets.append(e)
+        # 비밀번호 기억 — WiFi 비밀번호에만 해당하므로 그 입력란 바로 옆에 둔다.
+        # (예전에는 맨 아래 '로그 저장' 옆에 있어 무엇을 기억하는지 알기 어려웠다.)
+        # USB 직결이면 WiFi 입력란과 함께 비활성화된다.
+        self.remember = tk.BooleanVar(value=bool(prefs.get("remember_password", False)))
+        cb = ttk.Checkbutton(self.wifi_frame, text="비밀번호 기억", variable=self.remember)
+        cb.grid(row=1, column=2, sticky="w", padx=(0, 10), pady=3)
+        self.wifi_widgets.append(cb)
 
         # ===== 측정 설정 =====
         meas = ttk.LabelFrame(body, text=" 측정 설정 ")
         meas.grid(row=r, column=0, columnspan=2, sticky="ew", padx=12, pady=6); r += 1
         self.rate_cb = self._combo(meas, 0, "측정 속도", RATE_OPTIONS,
-                                   prefs.get("rate", 1))
+                                   prefs.get("rate", 0))
         self.rm_cb = self._combo(meas, 1, "데이터 읽기 방식", READMODE_OPTIONS,
                                  prefs.get("read_mode", 1))
         self.fs_cb = self._combo(meas, 2, "측정 범위 (풀스케일)", FULLSCALE_OPTIONS,
                                  prefs.get("full_scale_g", 4))
-        ttk.Label(meas, text="측정 범위를 넘는 진동은 잘려서 기록됩니다(클리핑).",
-                  foreground="#666").grid(row=3, column=0, columnspan=2,
-                                          sticky="w", padx=10, pady=(0, 6))
 
         # ===== 실행 =====
         ttk.Separator(body, orient="horizontal").grid(
@@ -363,6 +394,8 @@ class SetupApp(tk.Tk):
         self.inject_btn = ttk.Button(act, text="②  설정 주입", width=18,
                                      command=self.on_inject)
         self.inject_btn.pack(side="left", padx=6)
+        # '전체 순차' 버튼은 뺐다 (2026-09-26, 사용자 결정) — 여러 대를 한 버튼으로
+        # 처리하면 어느 보드가 진행 중인지 헷갈린다. 항상 선택한 1대에 ① → ② 를 한다.
         self.cancel_btn = ttk.Button(act, text="취소", width=8,
                                      command=self.on_cancel, state="disabled")
         self.cancel_btn.pack(side="left", padx=6)
@@ -379,10 +412,7 @@ class SetupApp(tk.Tk):
         # ===== 하단 =====
         foot = ttk.Frame(body)
         foot.grid(row=r, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 14))
-        self.remember = tk.BooleanVar(value=bool(prefs.get("remember_password", False)))
-        ttk.Checkbutton(foot, text="비밀번호 기억",
-                        variable=self.remember).pack(side="left")
-        ttk.Button(foot, text="로그 저장", command=self.on_save_log).pack(side="left", padx=8)
+        ttk.Button(foot, text="로그 저장", command=self.on_save_log).pack(side="left")
         self.factory_lbl = ttk.Label(foot, text="공장 초기화", foreground="#a33",
                                      cursor="hand2")
         self.factory_lbl.pack(side="right")
@@ -518,6 +548,10 @@ class SetupApp(tk.Tk):
             messagebox.showerror(args[0], args[1])
         elif kind == "prefill":
             self._apply_prefill(args[0])
+        elif kind == "boards":
+            self._apply_macs(args[0])
+        elif kind == "board_row":
+            self._show_board_row(*args)
         elif kind == "ask":
             # 워커가 답을 기다리고 있다. 반드시 event 를 set 해야 한다.
             title, msg, holder, ev = args
@@ -582,17 +616,20 @@ class SetupApp(tk.Tk):
     def _set_busy(self, busy):
         self._busy = busy
         state = "disabled" if busy else "normal"
-        for w in (self.detect_btn, self.read_btn, self.inject_btn,
-                  self.refresh_btn):
+        for w in (self.read_btn, self.inject_btn,
+                  self.refresh_btn, self.find_btn):
             w.configure(state=state)
         # 번들 펌웨어가 없으면 굽기는 계속 비활성으로 둔다
         if self.manifest:
             self.flash_btn.configure(state=state)
-        self.port_cb.configure(state="disabled" if busy else "readonly")
+        # 작업 중에는 작업할 센서를 바꾸지 못하게 한다 — 도중에 바뀌면
+        # 어느 보드에 무엇을 썼는지 알 수 없게 된다.
+        self.tree.configure(selectmode="none" if busy else "browse")
         self.factory_lbl.configure(foreground="#999" if busy else "#a33")
         self.cancel_btn.configure(state="normal" if busy else "disabled")
         if not busy:
             self._cancel.clear()
+            self._stop_indeterminate()
 
     def _start(self, name, fn, *fnargs):
         """워커 시작. 이미 실행 중이면 거부한다 (두 작업이 포트를 다투지 않게)."""
@@ -611,6 +648,9 @@ class SetupApp(tk.Tk):
         """워커 공통 뒷정리. 어떤 경로로 끝나도 버튼이 되살아나게 한다."""
         try:
             fn(*fnargs)
+        except StepError as e:
+            self._post("log", "%s %s" % ("⚠" if e.warn else "❌", e.title))
+            self._post("warn" if e.warn else "error", e.title, e.body)
         except esp_flash.PortBusyError as e:
             self._post("log", "❌ %s" % e)
             self._post("error", "포트 사용 중", str(e))
@@ -635,40 +675,155 @@ class SetupApp(tk.Tk):
             for w in self.wifi_widgets:
                 w.configure(state="disabled")
             self.wifi_frame.configure(text=" WiFi 전송 설정 (USB 직결에서는 사용 안 함) ")
-            self.tr_hint.configure(
-                text="💡 USB 케이블로 연결된 PC가 데이터를 받습니다 (최대 26.6 kHz).\n"
-                     "⚠️ 전송 중에는 디바이스 로그가 표시되지 않습니다.\n"
-                     "수신:  rpi-collector/collect_cli.py --auto",
-                fg="#8a5a00")
         else:
             for w in self.wifi_widgets:
                 w.configure(state="normal")
             self.wifi_frame.configure(text=" WiFi 전송 설정 ")
-            self.tr_hint.configure(
-                text="센서가 WiFi에 접속해 아래 IP·포트로 데이터를 보냅니다.\n"
-                     "2.4GHz 전용 — 5GHz 네트워크에는 접속하지 못합니다.\n"
-                     "수신:  rpi-collector/udp_receiver.py",
-                fg="#666")
 
     # ------------------------------------------------------------------
     # 입력 수집 / 채우기
     # ------------------------------------------------------------------
-    def refresh_ports(self):
-        """현재 USB 연결 상태로 콤보박스 갱신.
+    # ---------- 진동센서 목록 ----------
+    def refresh_ports(self, *, keep_mac=True):
+        """연결된 보드로 목록을 다시 채운다 (MAC 조회는 하지 않는다).
 
-        디바이스를 뺐다 꽂으면 ACM 번호가 바뀐다. 목록에 없는 과거 선택값이
-        남아 "없는 포트로 굽기" 가 되지 않도록 즉시 첫 항목으로 다시 잡는다.
+        MAC 조회는 보드를 부트로더로 리셋하므로 목록 갱신마다 하지 않는다.
+        `keep_mac` 이면 **같은 USB 슬롯**에서 앞서 읽은 MAC 을 물려받는다 —
+        슬롯이 같으면 같은 보드이므로 다시 읽을 필요가 없다. 슬롯이 바뀌었으면
+        물려받지 않는다 (다른 보드일 수 있다).
         """
-        ports = list_serial_ports()
-        self.port_cb["values"] = ports
-        if self.port_var.get() not in ports:
-            self.port_var.set(ports[0] if ports else "")
+        prev_mac = {b.slot: b.mac for b in self.boards if b.mac} if keep_mac else {}
+        prev_sel = self._selected_slot()
+
+        self.boards = ports_mod.list_ports()
+        for b in self.boards:
+            b.mac = prev_mac.get(b.slot)
+
+        log = provision_log.load()
+        self.tree.delete(*self.tree.get_children())
+        for b in self.boards:
+            entry = log.get(b.mac) if b.mac else None
+            self.tree.insert("", "end", values=(
+                b.short_slot, b.short_dev, b.mac or "미확인",
+                provision_log.summary_line(b.mac, entry) if b.mac else ""))
+
+        # 이전 선택을 슬롯 기준으로 되살린다 (포트 번호가 바뀌어도 유지)
+        items = self.tree.get_children()
+        if items:
+            idx = 0
+            for i, b in enumerate(self.boards):
+                if b.slot == prev_sel:
+                    idx = i
+                    break
+            self.tree.selection_set(items[idx])
+        self._on_board_select()
+
+    def _selected_slot(self):
+        sel = self.tree.selection() if hasattr(self, "tree") else ()
+        if not sel:
+            return None
+        i = self.tree.index(sel[0])
+        return self.boards[i].slot if i < len(self.boards) else None
+
+    def selected_board(self):
+        """지금 선택된 Board. 없으면 None."""
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        i = self.tree.index(sel[0])
+        return self.boards[i] if i < len(self.boards) else None
+
+    def _on_board_select(self):
+        b = self.selected_board()
+        if b is None:
+            self.board_hint.configure(text="연결된 보드가 없습니다", fg="#a33")
+            return
+        if not b.mac:
+            self.board_hint.configure(
+                text="대상  %s · %s   —  ‘MAC 주소 확인’ 을 누르세요"
+                     % (b.short_dev, b.short_slot), fg="#8a5a00")
+            return
+        entry = provision_log.load().get(b.mac)
+        self.board_hint.configure(
+            text="대상  %s   (%s · %s)   %s"
+                 % (b.mac, b.short_dev, b.short_slot,
+                    provision_log.summary_line(b.mac, entry) if entry else "새 보드"),
+            fg="#555")
+
+    def on_find_boards(self):
+        """모든 포트의 MAC 을 읽어 목록을 채운다 (포트당 약 3초)."""
+        self.refresh_ports(keep_mac=False)
+        if not self.boards:
+            messagebox.showwarning("보드 없음", "연결된 USB 시리얼 포트가 없습니다.")
+            return
+        self.logln("── MAC 주소 확인 (%d대, 포트당 약 3초)" % len(self.boards))
+        # 한 대씩 차례로 읽으므로 뒤 순번은 한동안 기다린다. 그동안 반응이 없으면
+        # 멈춘 줄 알고, 결과 칸이 비어 있으면 실패로 오해한다 — 줄마다 상태를 보인다.
+        for item in self.tree.get_children():
+            self.tree.set(item, "mac", "대기 — 다음 차례")
+        if self._start("보드 확인 중...", self._w_find_boards, list(self.boards)):
+            self.pbar.configure(mode="indeterminate")
+            self.pbar.start(12)
+
+    def _w_find_boards(self, boards):
+        """**워커 스레드.** MAC 을 읽고 결과만 메인으로 보낸다."""
+        n = len(boards)
+        order = {id(b): i + 1 for i, b in enumerate(boards)}
+
+        def on_board(b, state):
+            self._post("board_row", b.slot, state, b.device, b.mac, b.error)
+            if state == "checking":
+                self._post("status", "보드 확인 중... (%d/%d)" % (order[id(b)], n))
+
+        ports_mod.read_macs(boards, on_line=lambda l: self._post("log", "  " + l),
+                            on_board=on_board)
+        found = [(b.slot, b.mac, b.error) for b in boards]
+        for slot, mac, err in found:
+            self._post("log", "  %s → %s" % (slot.rsplit("-usb-", 1)[-1],
+                                             mac or "읽기 실패: %s" % err))
+        self._post("boards", found)
+
+    def _show_board_row(self, slot, state, device, mac, err):
+        """MAC 주소 확인 중 한 줄의 상태를 바로 보인다. **메인 스레드 전용.**"""
+        for item, b in zip(self.tree.get_children(), self.boards):
+            if b.slot != slot:
+                continue
+            b.device = device           # USB 복구로 ttyACM 번호가 바뀌었을 수 있다
+            self.tree.set(item, "dev", b.short_dev)
+            self.tree.set(item, "mac", {
+                "checking": "확인 중…",
+                "recovering": "USB 복구 중…",
+            }.get(state) or mac or "읽기 실패 (로그 참고)")
+            break
+
+    def _stop_indeterminate(self):
+        if str(self.pbar.cget("mode")) == "indeterminate":
+            self.pbar.stop()
+            self.pbar.configure(mode="determinate", value=0)
+
+    def _apply_macs(self, found):
+        """읽은 MAC 을 목록에 반영한다. **메인 스레드 전용.**"""
+        by_slot = {slot: (mac, err) for slot, mac, err in found}
+        for b in self.boards:
+            if b.slot in by_slot:
+                b.mac, b.error = by_slot[b.slot]
+        log = provision_log.load()
+        for item, b in zip(self.tree.get_children(), self.boards):
+            entry = log.get(b.mac) if b.mac else None
+            self.tree.item(item, values=(
+                b.short_slot, b.short_dev,
+                b.mac or ("읽기 실패 (로그 참고)" if b.error else "미확인"),
+                provision_log.summary_line(b.mac, entry) if b.mac else ""))
+        self._on_board_select()
 
     def _port(self):
-        p = self.port_var.get().strip()
-        if not p:
-            raise ValueError("USB 포트를 선택하세요. (케이블 연결 후 ⟳ 를 누르세요)")
-        return p
+        """선택된 보드의 포트. 선택이 없으면 ValueError."""
+        b = self.selected_board()
+        if b is None:
+            raise ValueError(
+                "진동센서 목록에서 작업할 센서를 선택하세요.\n"
+                "목록이 비어 있으면 케이블을 확인하고 ‘목록만 갱신’ 을 누르세요.")
+        return b.device
 
     def collect(self):
         ssid = self.ssid.get().strip()
@@ -743,23 +898,8 @@ class SetupApp(tk.Tk):
             self.logln("비어 있는 항목(직접 입력 필요): " + ", ".join(missing))
 
     # ------------------------------------------------------------------
-    # 동작 — 디바이스 확인 / 설정 읽기
+    # 동작 — 설정 읽기
     # ------------------------------------------------------------------
-    def on_detect(self):
-        try:
-            port = self._port()
-        except ValueError as e:
-            messagebox.showwarning("입력 확인", str(e)); return
-        self.logln("── 디바이스 확인 (%s)" % port)
-        self._start("디바이스 확인 중...", self._w_detect, port)
-
-    def _w_detect(self, port):
-        info = esp_flash.detect_device(port, on_line=self._dev_line())
-        self._post("log", "칩: %s" % info.get("chip"))
-        self._post("log", "MAC: %s" % info.get("mac"))
-        self._post("log", "플래시: %s" % info.get("flash_size"))
-        self._post("progress", 100)
-
     def on_read_settings(self):
         try:
             port = self._port()
@@ -796,10 +936,17 @@ class SetupApp(tk.Tk):
                 "· 저장된 설정(NVS)은 지워지지 않습니다\n"
                 "· 진행 중 USB 케이블을 뽑지 마세요\n\n계속할까요?"):
             return
-        self.logln("── ① 펌웨어 굽기 (%s)" % port)
+        b = self.selected_board()
+        self.logln("── ① 펌웨어 굽기  대상 %s (%s)"
+                   % ((b.mac if b and b.mac else "MAC 미확인"), port))
         self._start("펌웨어 굽는 중...", self._w_flash_fw, port)
 
-    def _w_flash_fw(self, port):
+    def _do_flash_fw(self, port):
+        """① 굽기 본체. **워커 스레드.** 새 포트를 돌려준다. 실패하면 StepError.
+
+        대화상자를 띄우지 않는다 — 순차 진행에서 보드마다 대화상자가 뜨면
+        사용자가 매번 눌러야 해 "자동" 이 아니게 된다. 판정은 예외로 올린다.
+        """
         cb = dict(
             on_line=self._dev_line(),
             on_progress=lambda p: self._post("progress", p),
@@ -815,21 +962,21 @@ class SetupApp(tk.Tk):
         self._post("log", "✅ 펌웨어 쓰기 완료 (이미지 %d개 검증 %d회)"
                    % (res["images"], res["verified"]))
         self._post("status", "부팅 확인 중...")
-        self._post("log", "── 부팅 로그 확인")
-        st = boot_log.verify_after_flash(
-            port, on_line=self._dev_line())
+        st = boot_log.verify_after_flash(port, on_line=self._dev_line())
         self._post("log", st.summary())
 
         if st.sensor_missing:
-            self._post("error", "센서 미감지",
-                       "펌웨어는 정상 동작하지만 센서를 찾지 못했습니다.\n"
-                       "boardcheck 로 보드를 먼저 진단하세요.")
-            return
+            raise StepError("센서 미감지",
+                            "펌웨어는 정상 동작하지만 센서를 찾지 못했습니다.\n"
+                            "boardcheck 로 보드를 먼저 진단하세요.")
         if not st.deploy_build:
-            self._post("error", "개발 빌드",
-                       "번들 펌웨어가 개발 빌드입니다 — 설정툴의 WiFi 입력이 무시됩니다.\n"
-                       "배포 담당자에게 정상 패키지를 요청하세요.")
-            return
+            raise StepError("개발 빌드",
+                            "번들 펌웨어가 개발 빌드입니다 — 설정툴의 WiFi 입력이 "
+                            "무시됩니다.\n배포 담당자에게 정상 패키지를 요청하세요.")
+        return port
+
+    def _w_flash_fw(self, port):
+        port = self._do_flash_fw(port)
         self._post("info", "완료",
                    "펌웨어 굽기가 끝났습니다.\n\n이어서 ② 설정 주입 을 누르세요.")
 
@@ -849,19 +996,103 @@ class SetupApp(tk.Tk):
     # ------------------------------------------------------------------
     # 동작 — ② 설정 주입
     # ------------------------------------------------------------------
+    def _port_conflict(self, cfg, mac):
+        """WiFi 모드에서 **다른 보드**가 이미 같은 IP:포트를 쓰는지 본다.
+
+        두 센서가 같은 수신 포트로 보내면 수신기가 두 데이터를 한 파일에 섞고
+        유실이 실제보다 훨씬 크게 잡힌다 — 조용한 오류라 가장 나쁘다.
+        이력에 근거가 있으므로 주입 전에 걸러낼 수 있다.
+        """
+        if int(cfg.get("transport", 0)) != 0:
+            return None                      # USB 직결은 포트를 쓰지 않는다
+        for other, e in provision_log.load().items():
+            if mac and other == mac.lower():
+                continue                     # 같은 보드 재설정은 충돌이 아니다
+            if int(e.get("transport", -1)) != 0:
+                continue
+            if (e.get("srv_ip") == cfg["srv_ip"]
+                    and int(e.get("srv_port") or 0) == int(cfg["srv_port"])):
+                return other
+        return None
+
     def on_inject(self):
         try:
             cfg = self.collect()
         except ValueError as e:
             messagebox.showwarning("입력 확인", str(e)); return
         port = self._port()
-        save_prefs(cfg, self.remember.get())
-        self.logln("── ② 설정 주입 (%s)" % port)
-        self.logln("입력값 기억됨%s"
-                   % ("" if self.remember.get() else " (비밀번호 제외)"))
-        self._start("설정 주입 중...", self._w_inject, port, cfg)
+        b = self.selected_board()
+        mac = b.mac if b else None
 
-    def _w_inject(self, port, cfg):
+        other = self._port_conflict(cfg, mac)
+        if other:
+            nxt = int(cfg["srv_port"]) + 1
+            ans = messagebox.askyesnocancel(
+                "수신 포트 중복",
+                "다른 보드가 이미 %s:%s 를 쓰고 있습니다.\n(%s)\n\n"
+                "같은 포트를 쓰면 두 센서 데이터가 한 파일에 섞이고\n"
+                "유실이 실제보다 크게 잡힙니다.\n\n"
+                "이 보드를 %d 번 포트로 바꿀까요?\n\n"
+                "  예   — %d 로 바꿔 진행\n"
+                "  아니오 — 그대로 진행\n"
+                "  취소 — 중단"
+                % (cfg["srv_ip"], cfg["srv_port"], other, nxt, nxt))
+            if ans is None:
+                return
+            if ans:
+                self.srv_port.set(str(nxt))
+                cfg["srv_port"] = nxt
+                self.logln("수신 포트를 %d 로 바꿨습니다 (중복 회피)" % nxt)
+
+        save_prefs(cfg, self.remember.get())
+        # 센서 번호 = 목록(슬롯 순)에서의 순번. 수집기 slots.py --auto 와 같은 규칙이다.
+        sensor = str(self.boards.index(b) + 1) if b in self.boards else None
+        self.logln("── ② 설정 주입  대상 %s (%s)" % (mac or "MAC 미확인", port))
+        self._start("설정 주입 중...", self._w_inject, port, cfg, mac,
+                    b.slot if b else None, sensor)
+
+    def _w_inject(self, port, cfg, mac=None, slot=None, sensor=None):
+        """단독 ② 실행 — 본체를 돌리고 결과 대화상자를 띄운다.
+
+        MAC 을 모르면 먼저 읽는다 (약 3초). 이력은 MAC 으로 남기는데, MAC 주소 확인을
+        건너뛰고 ② 만 누르면 예전에는 이력이 아예 남지 않았다.
+        """
+        if not mac:
+            b = next((x for x in self.boards if x.slot == slot), None)
+            if b is not None:
+                self._post("status", "보드 확인 중 (MAC)...")
+                ports_mod.read_macs([b], on_line=lambda l: self._post("log", "  " + l),
+                                    on_board=lambda bd, st: self._post(
+                                        "board_row", bd.slot, st, bd.device, bd.mac, bd.error))
+                mac, port = b.mac, b.device
+                self._post("boards", [(b.slot, b.mac, b.error)])
+                self._post("status", "설정 주입 중...")
+        self._do_inject(port, cfg, mac, slot, sensor)
+        self._post("info", "완료", "설정 주입 완료 — 스트리밍이 시작됐습니다.")
+
+    def _do_inject(self, port, cfg, mac=None, slot=None, sensor=None):
+        """② 주입 본체. **워커 스레드.** 새 포트를 돌려준다. 실패하면 StepError.
+
+        성공 시 **MAC 별 이력을 남긴다** — 보드를 여러 대 다룰 때 "이 보드에
+        어떤 IP·포트를 넣었나" 를 되짚을 유일한 수단이다. MAC 을 모르면
+        (MAC 주소 확인을 하지 않았으면) 기록하지 않고 그 사실을 로그에 남긴다.
+        """
+        port = self._inject_core(port, cfg)
+        if mac:
+            try:
+                provision_log.record(
+                    mac, cfg, slot=slot, sensor=sensor,
+                    fw_version=(self.manifest or {}).get("app_version"),
+                    fw_package=(self.manifest or {}).get("package_version"))
+                self._post("log", "이력 기록: %s" % mac)
+            except Exception as e:
+                self._post("log", "⚠ 이력 기록 실패: %s" % e)
+        else:
+            self._post("log", "ℹ MAC 미확인이라 이력을 남기지 않았습니다 "
+                              "(‘MAC 주소 확인’ 을 먼저 누르면 기록됩니다)")
+        return port
+
+    def _inject_core(self, port, cfg):
         with tempfile.TemporaryDirectory() as td:
             bin_path = os.path.join(td, "devcfg_nvs.bin")
             build_nvs_bin(cfg, bin_path)
@@ -888,29 +1119,22 @@ class SetupApp(tk.Tk):
 
         # 판정: 펌웨어가 되울린 설정이 입력값과 같은가가 핵심이다.
         if st.mismatches:
-            self._post("error", "설정 불일치",
-                       "주입은 됐지만 펌웨어가 읽은 값이 입력값과 다릅니다.\n\n"
-                       + "\n".join("· %s: 입력 %r ≠ 디바이스 %r" % m
-                                   for m in st.mismatches))
-            return
+            raise StepError(
+                "설정 불일치",
+                "주입은 됐지만 펌웨어가 읽은 값이 입력값과 다릅니다.\n\n"
+                + "\n".join("· %s: 입력 %r ≠ 디바이스 %r" % m
+                             for m in st.mismatches))
         if not st.config_applied:
-            self._post("warn", "확인 불가",
-                       "주입은 완료됐으나 부팅 로그에서 설정 반영을 확인하지 못했습니다.\n"
-                       "USB 를 뽑았다 꽂아 다시 확인해 보세요.")
-            return
-        if st.streaming:
-            self._post("info", "완료", "설정 주입 완료 — 스트리밍이 시작됐습니다.\n\n"
-                                       + self._receiver_hint(cfg))
-        else:
-            self._post("warn", "스트리밍 미시작",
-                       "설정은 반영됐지만 스트리밍이 시작되지 않았습니다.\n"
-                       + (st.stream_fail_reason or "부팅 로그를 확인하세요."))
-
-    @staticmethod
-    def _receiver_hint(cfg):
-        if int(cfg["transport"]) == 2:
-            return "수신: rpi-collector/collect_cli.py --auto"
-        return "수신: rpi-collector/udp_receiver.py  (%s:%s)" % (cfg["srv_ip"], cfg["srv_port"])
+            raise StepError(
+                "확인 불가",
+                "주입은 완료됐으나 부팅 로그에서 설정 반영을 확인하지 못했습니다.\n"
+                "USB 를 뽑았다 꽂아 다시 확인해 보세요.", warn=True)
+        if not st.streaming:
+            raise StepError(
+                "스트리밍 미시작",
+                "설정은 반영됐지만 스트리밍이 시작되지 않았습니다.\n"
+                + (st.stream_fail_reason or "부팅 로그를 확인하세요."), warn=True)
+        return port
 
     # ------------------------------------------------------------------
     # 동작 — 공장 초기화 / 취소 / 로그 저장
@@ -951,6 +1175,16 @@ class SetupApp(tk.Tk):
         self._cancel.set()
         self.logln("⏹ 취소 요청 — 진행 중인 단계가 끝나는 대로 멈춥니다.")
         self.status.configure(text="취소 중...")
+
+    def on_help(self):
+        """사용설명서를 브라우저로 연다 (오프라인 파일)."""
+        import helpdoc
+        try:
+            helpdoc.open_help()
+            self.logln("사용설명서를 열었습니다: %s" % helpdoc.HELP_FILE)
+        except helpdoc.HelpError as e:
+            self.logln("도움말 열기 실패 — %s" % e)
+            messagebox.showwarning("도움말", str(e))
 
     def on_save_log(self):
         text = self.log.get("1.0", "end").strip()

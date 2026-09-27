@@ -8,7 +8,8 @@
     USBDEVFS_RESET ioctl 로 장치를 재열거해야 풀린다.
 
 sudo 없이 되는 이유:
-    install.sh 가 넣는 udev 규칙이 /dev/bus/usb/* 를 plugdev 그룹 0660 으로 만든다.
+    install.sh 가 넣는 udev 규칙(70-iis3dwb.rules)이 /dev/bus/usb/* 를 plugdev 그룹
+    0660 으로 만들고, 데스크톱 세션 사용자에게는 uaccess ACL 을 붙인다.
     GUI 가 비밀번호를 묻지 않아야 하므로 이 경로가 중요하다.
     규칙이 없으면 PermissionError 를 올리고 sudo tools/usb-recover.sh 를 안내한다.
 
@@ -55,7 +56,7 @@ def find_bridge(port):
     /sys/class/tty/ttyACM0/device 에서 시작해, busnum/devnum/idVendor/idProduct 를
     모두 가진 디렉터리(= USB 장치 노드)까지 부모를 거슬러 올라간다.
     """
-    dev = os.path.realpath(port)                 # by-id 심볼릭 링크 해소
+    dev = os.path.realpath(port)                 # 심볼릭 링크 해소
     name = os.path.basename(dev)
     sys_dev = "/sys/class/tty/%s/device" % name
     if not os.path.exists(sys_dev):
@@ -86,13 +87,22 @@ def find_bridge(port):
 
 
 def stable_id(port):
-    """포트의 안정 식별자(/dev/serial/by-id/...) 를 돌려준다 (없으면 None).
+    """포트의 안정 식별자를 돌려준다 (없으면 None).
 
-    USB 리셋 후 ttyACM0 → ttyACM1 로 번호가 바뀔 수 있으므로,
-    by-id 심볼릭 링크를 기준으로 다시 찾는 편이 안전하다.
+    USB 리셋 후 ttyACM0 → ttyACM1 로 번호가 바뀔 수 있으므로, 번호가 아닌
+    무언가를 기준으로 다시 찾아야 한다.
+
+    **`/dev/serial/by-id/` 를 쓰면 안 된다.** 이 보드의 Cypress 브리지에는 고유
+    일련번호가 없어 두 대를 꽂으면 `usb-Cypress_Semiconductor_USB-UART_LP-if00`
+    하나만 생기고 나중에 열거된 쪽이 그 링크를 가져간다. 그 상태에서 by-id 로
+    되찾으면 **엉뚱한 보드를 복구된 포트로 돌려주고**, 호출자는 그 포트에
+    펌웨어를 굽는다. 실제로 보드 2대를 꽂고 겪었다.
+
+    그래서 `/dev/serial/by-path/` — **USB 구멍의 물리 경로** — 를 쓴다.
+    리셋해도 같은 구멍이면 같은 경로이고, 보드마다 반드시 다르다.
     """
     target = os.path.realpath(port)
-    for link in glob.glob("/dev/serial/by-id/*"):
+    for link in sorted(glob.glob("/dev/serial/by-path/*")):
         try:
             if os.path.realpath(link) == target:
                 return link
@@ -109,7 +119,7 @@ def reset(bus, dev):
     except PermissionError:
         raise UsbResetError(
             "%s 에 접근 권한이 없습니다." % node,
-            "· ./install.sh 를 실행하지 않았거나, plugdev 그룹 적용 전(재로그인 필요)입니다\n"
+            "· bash run.sh 로 실행하지 않았거나, SSH 접속에서 plugdev 그룹 적용 전(다시 접속)입니다\n"
             "· 즉시 복구가 필요하면:  sudo tools/usb-recover.sh")
     except OSError as e:
         raise UsbResetError("%s 를 열 수 없습니다: %s" % (node, e))
@@ -122,19 +132,19 @@ def reset(bus, dev):
         os.close(fd)
 
 
-def wait_for_port(by_id, fallback, timeout=15):
-    """리셋 후 포트가 다시 나타날 때까지 기다리고 실제 경로를 돌려준다."""
+def wait_for_port(stable, fallback, timeout=15):
+    """리셋 후 포트가 다시 나타날 때까지 기다리고 실제 경로를 돌려준다.
+
+    `stable` 은 by-path 링크다 (stable_id 참조). 이것이 없으면 원래 포트 경로가
+    다시 나타나기만 기다린다 — **아무 포트나 집어 돌려주지 않는다.** 보드가
+    여러 대일 때 그렇게 하면 다른 보드를 복구된 것으로 착각하게 된다.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if by_id and os.path.exists(by_id):
-            return os.path.realpath(by_id)
-        if not by_id and os.path.exists(fallback):
+        if stable and os.path.exists(stable):
+            return os.path.realpath(stable)
+        if not stable and os.path.exists(fallback):
             return fallback
-        # by-id 가 없는 환경 대비: 아무 USB 시리얼이라도 올라왔는지
-        if not by_id:
-            cands = sorted(glob.glob("/dev/ttyACM*")) + sorted(glob.glob("/dev/ttyUSB*"))
-            if cands:
-                return cands[0]
         time.sleep(0.5)
     return None
 
@@ -153,14 +163,17 @@ def recover(port, *, on_line=None):
         % (info["vid"], info["pid"], info["product"] or "?",
            info["bus"], info["dev"]))
 
-    by_id = stable_id(port)
-    if by_id:
-        log("안정 식별자: %s" % by_id)
+    stable = stable_id(port)
+    if stable:
+        log("물리 포트: %s" % os.path.basename(stable))
+    else:
+        log("⚠ by-path 링크가 없어 포트 번호로만 되찾습니다 "
+            "(보드가 여러 대면 확인이 필요합니다)")
 
     log("USBDEVFS_RESET 실행...")
     reset(info["bus"], info["dev"])
 
-    newport = wait_for_port(by_id, port)
+    newport = wait_for_port(stable, port)
     if not newport:
         raise UsbResetError(
             "리셋 후 포트가 다시 나타나지 않았습니다.",
@@ -185,7 +198,7 @@ def main(argv):
             info = find_bridge(port)
             for k in ("vid", "pid", "manufacturer", "product", "bus", "dev", "node"):
                 print("  %-13s %s" % (k, info[k]))
-            print("  %-13s %s" % ("by-id", stable_id(port) or "(없음)"))
+            print("  %-13s %s" % ("by-path", stable_id(port) or "(없음)"))
             print("  %-13s %s" % ("writable", os.access(info["node"], os.W_OK)))
             return 0
         if cmd == "reset":

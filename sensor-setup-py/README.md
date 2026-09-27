@@ -1,59 +1,55 @@
-# IIS3DWB 센서 설정 툴 (Python · 무설치)
+# SHT 진동센서 설정 (폐쇄망 · 무설치)
 
-이 폴더(`set_sensor_gui.py` + `nvs_gen.py`)만 복사해 가면 IIS3DWB 센서의
-WiFi·서버·측정속도·읽기방식을 설정하고 디바이스에 영구 저장(NVS)할 수 있습니다.
+새 보드에 **펌웨어를 굽고(①)** 측정 설정을 **주입(②)** 하는 GUI 입니다.
+**인터넷과 ESP-IDF 가 필요 없습니다** — 필요한 것은 모두 이 패키지 안에 있습니다.
 
-**NVS 생성은 외부 도구(`nvs_partition_gen.py`)가 필요 없습니다** — `nvs_gen.py`가
-순수 파이썬으로 NVS 바이너리를 직접 만듭니다(검증된 Rust 설정툴과 byte-exact 동일).
-따라서 **전체 ESP-IDF 설치 없이도** 동작하며, 디바이스에 굽는 단계(`esptool`)만 있으면 됩니다.
+| 폴더 | 내용 |
+|------|------|
+| `firmware/` | 구울 배포 펌웨어 3종 + manifest(sha256) |
+| `vendor/` | esptool · pyserial · intelhex (순수 파이썬, 소스째 포함) |
+| `udev/` | USB 포트 규칙 (처음 실행 시 `run.sh` 가 설치) |
 
-> 📖 **그림과 함께 보는 사용 설명서:** `사용설명서.html` 을 브라우저로 열어보세요.
-> (화면 미리보기, 단계별 사용법, 문제 해결을 한 페이지로 정리)
+> 📖 **그림과 함께 보는 사용 설명서:** `help.html` (화면 왼쪽 아래 **도움말** 버튼)
 
 ---
 
-## 준비물 (받는 PC 기준)
+## 준비물 (현장 라즈베리파이)
 
-- Python 3.7+ (표준 라이브러리 `tkinter` 사용 — 대부분 기본 포함)
-- **esptool** — 둘 중 하나면 됨:
-  - ESP-IDF 환경을 활성화했다면 이미 PATH 에 있음 (`source .../export.sh`), **또는**
-  - `pip install esptool` 한 번 (ESP-IDF 전체 설치 불필요)
-- (선택) `pyserial` — USB 포트 자동 인식·라벨에 사용. 없으면 `/dev` 스캔으로 폴백.
-  `pip install pyserial`
-- USB 케이블로 연결된 IIS3DWB 디바이스 (펌웨어가 이미 플래시된 상태)
-
-> 펌웨어가 안 들어간 새 보드라면 먼저 펌웨어를 플래시해야 합니다.
-> (펌웨어 저장소: https://github.com/JamesjinKim/3dbw — `idf.py flash`)
-
-> 📁 `old/` 폴더는 **구버전**입니다(외부 `nvs_partition_gen.py` 의존). **무시하세요.**
-> 최신은 최상위 `set_sensor_gui.py` + `nvs_gen.py` 입니다.
+- Raspberry Pi OS **Desktop** 이미지 (Python 3.7 이상 + tkinter 기본 포함)
+  - Lite(화면 없는) 이미지에는 tkinter 가 없어 GUI 가 뜨지 않습니다
+- USB 케이블로 연결된 IIS3DWB 센서 (새 보드여도 됩니다 — ① 에서 펌웨어를 굽습니다)
 
 ---
 
 ## 실행 방법
 
 ```bash
-# esptool 이 PATH 에 없다면 셋 중 하나:
-sudo apt install -y esptool                # 라즈베리파이/Debian — 가장 간단
-source ~/esp/v5.4.3/esp-idf/export.sh      # ESP-IDF 활성화 (경로는 환경에 맞게)
-#   또는:  pip install esptool
+tar -xzf iis3dwb-setup-<버전>.tar.gz
+cd iis3dwb-setup-<버전>
 
-# 설정 툴 실행
-cd sensor-setup-py
-python3 set_sensor_gui.py
+bash run.sh
 ```
 
-창이 뜨면:
-1. **USB 포트** 선택 (안 보이면 "포트 새로고침")
-2. **WiFi 이름/비밀번호** 입력 (2.4GHz 전용)
-3. **라즈베리파이 IP / 포트** 입력 — 수신기 화면에 표시된 IP (포트 기본 9000)
-4. **측정 속도** 선택 (기본 3.3 kHz · 권장)
-5. **데이터 읽기 방식** 선택 (기본 인터럽트 · 저부하)
-6. **측정 범위(풀스케일)** 선택 (기본 ±4g)
-7. **전송 방식** 선택 (기본 WiFi UDP)
-8. **"설정 저장 & 디바이스에 주입"** 클릭
+`run.sh` 하나가 전부 합니다: 매번 환경을 점검하고, **처음 한 번만** USB 권한(udev
+규칙·사용자 그룹)을 설정한 뒤(관리자 비밀번호를 물을 수 있음) GUI 를 띄웁니다.
+재로그인은 필요 없습니다. 실행하면 바탕화면에 **SHT 진동센서 설정** 아이콘이 생겨,
+다음부터는 더블클릭으로 실행할 수 있습니다.
 
-주입이 끝나면 디바이스를 재부팅(전원 재인가)하면 설정한 경로로 데이터를 전송합니다.
+> `./run.sh` 가 아니라 `bash run.sh` 로 실행하세요. USB 메모리(FAT)로 복사하면
+> 실행권한이 사라져 `./run.sh` 는 "허가 거부" 가 납니다.
+>
+> 새 버전은 옆 폴더에 풀고 그 폴더에서 `bash run.sh` 하면 됩니다. 입력값은 버전과
+> 무관하게 보존되고, 아이콘은 마지막으로 실행한 폴더를 가리킵니다.
+
+창이 뜨면 (자세한 설명은 `help.html`):
+1. **MAC 주소 확인** — 꽂힌 보드가 MAC 과 함께 **진동센서 목록**에 나옵니다. 작업할 보드를 클릭
+2. **전송 방식** 선택 — USB 직결(시리얼) 또는 WiFi(UDP). 이 선택이 나머지 입력을 정합니다
+   - WiFi 면 **WiFi 이름/비밀번호**(2.4GHz 전용)와 **라즈베리파이 IP / 포트**(기본 9000) 입력
+3. **측정 속도** — 기본 1 kHz (데이터량 최소). **주파수 분석(FFT)이 목적이면 26.6 kHz** 를 고르세요
+   (낮은 속도는 필터 없이 솎아내 고주파가 저주파로 접혀 들어옵니다 — `help.html` 5장)
+4. **데이터 읽기 방식** (기본 인터럽트) · **측정 범위** (기본 ±4g)
+5. **① 펌웨어 굽기** → 끝나면 **② 설정 주입** — 선택한 1대에만 합니다.
+   주입 후 보드가 되울린 값을 입력값과 대조하는 것까지 자동입니다
 
 ### 전송 방식 (transport)
 
@@ -62,8 +58,8 @@ WiFi 와 USB 직결은 **배타 선택**입니다. USB 직결을 고르면 디�
 
 | 선택 | NVS `transport` | 라즈베리파이 수신 명령 |
 |------|-----------------|----------------------|
-| WiFi (UDP) | `0` | `python3 rpi-collector/udp_receiver.py` |
-| USB 직결 (시리얼) | `2` | `python3 rpi-collector/collect_cli.py --auto` |
+| WiFi (UDP) | `0` | 수집기 패키지에서 `bash run.sh udp` |
+| USB 직결 (시리얼) | `2` | 수집기 패키지에서 `bash run.sh` |
 
 > USB 직결 모드에서는 WiFi 이름·라즈베리파이 IP 가 쓰이지 않습니다. 비워두면
 > 자리표시 값(`unused` / `0.0.0.0`)이 저장되고, 입력해 두면 그대로 보존되어
@@ -85,25 +81,17 @@ WiFi 와 USB 직결은 **배타 선택**입니다. USB 직결을 고르면 디�
 
 ## 여러 센서 연속 설정
 
+- **한 번에 한 대씩** 합니다. 1번 보드를 선택해 ① → ②, 끝나면 2번 보드를 선택해 ① → ②.
+  입력한 설정은 남아 있으므로 보드만 바꿔 고르면 됩니다.
 - 입력값은 자동으로 기억됩니다 (`~/.iis3dwb_sensor_setup.json`).
-- 다음 센서는 **포트만 바꿔** 바로 "주입" 누르면 됩니다.
-- 같은 WiFi·같은 라즈베리파이로 여러 대를 빠르게 등록할 수 있습니다.
 
 ---
 
-## 동작 확인 (선택)
+## 동작 확인
 
-주입 후 디바이스 시리얼 로그로 연결·전송을 확인할 수 있습니다
-(USB 직결 모드에서는 스트리밍 중 로그가 차단되므로 로그가 안 보이는 것이 정상):
-
-```bash
-idf.py -p /dev/ttyACM0 monitor      # 포트는 환경에 맞게 (종료: Ctrl+])
-```
-
-로그에서 다음을 확인:
-- `WiFi Connected` + `IP : 192.168.0.xxx`
-- `📡 센서 데이터 스트리밍 중! → (라즈베리파이IP):9000`
-- `[스트리밍] 패킷=... 드롭=0 에러=0`
+별도 도구가 필요 없습니다. **② 설정 주입** 이 끝나면 도구가 보드의 부팅 로그를 읽어
+보드가 되울린 설정을 입력값과 대조하고, 스트리밍 시작 여부까지 판정합니다.
+나중에 다시 확인하려면 보드를 꽂고 **현재 설정 읽기** 를 누르세요.
 
 ---
 
@@ -111,11 +99,12 @@ idf.py -p /dev/ttyACM0 monitor      # 포트는 환경에 맞게 (종료: Ctrl+]
 
 | 증상 | 해결 |
 |------|------|
-| `esptool` 관련 오류 / 못 찾음 | `pip install esptool`, 또는 ESP-IDF 활성화(`source .../export.sh`). NVS 생성엔 ESP-IDF 가 필요 없지만 **굽기(esptool)** 는 필요합니다. |
-| 포트 목록이 비어 있음 | USB 케이블/포트 확인 후 "포트 새로고침". Linux 는 `dialout` 그룹 권한 필요. 포트 인식이 약하면 `pip install pyserial`. |
-| `No serial data received` | esptool 이 디바이스와 통신하지 못함. ① 다른 프로그램(`idf.py monitor` 등)이 같은 포트를 점유 중인지 확인 후 닫기 ② **데이터 통신용 USB 케이블**인지 확인(충전 전용 케이블은 안 됨) ③ 케이블 다시 꽂고 "포트 새로고침". |
-| Flash 주입 실패 (포트 사용 중) | `idf.py monitor` 등 시리얼을 점유한 다른 프로그램을 닫고 다시 시도. |
-| 주입은 됐는데 라즈베리파이에 수신 안 됨 | **라즈베리파이 IP 불일치**가 가장 흔한 원인. `hostname -I` 로 현재 IP 확인 후 그 IP로 다시 주입. (고정 IP 권장) |
+| `esptool` 을 찾지 못함 | 패키지의 `vendor/` 가 빠졌거나 손상됨. tar.gz 를 다시 풀어서 그 폴더에서 실행하세요. `bash install.sh --check` 로 확인할 수 있습니다. |
+| 포트 목록이 비어 있음 / 권한 오류 | USB 케이블/포트 확인 후 "목록만 갱신". 터미널에서 `bash run.sh` 를 다시 실행하면 빠진 권한을 설정합니다. SSH 로 접속해 쓰는 경우에만 그 뒤 **다시 접속**하세요. |
+| `No serial data received` | 도구가 보드와 통신하지 못함. ① 수집기(`collect_cli.py`) 등 같은 포트를 쓰는 프로그램을 닫기 ② **데이터 통신용 USB 케이블**인지 확인(충전 전용 불가) ③ 케이블 다시 꽂고 "목록만 갱신". |
+| 포트 사용 중 | 수집기 등 시리얼을 점유한 다른 프로그램을 닫고 다시 시도. |
+| 굽는 중 멈춤 (`Write timeout`) | 라즈베리파이의 USB 멈춤 증상입니다. 도구가 장치 리셋을 제안하면 **예**. 다른 경로에서 멈췄다면 `./tools/usb-recover.sh /dev/iis3dwb2` 처럼 **멈춘 포트를 지정**해 복구합니다. |
+| 주입은 됐는데 라즈베리파이에 수신 안 됨 | USB 직결이면 수집기 쪽 설정을 확인. WiFi 면 **라즈베리파이 IP 불일치**가 가장 흔한 원인 — `hostname -I` 로 현재 IP 확인 후 다시 주입. (고정 IP 권장) |
 
 ---
 
@@ -125,20 +114,16 @@ idf.py -p /dev/ttyACM0 monitor      # 포트는 환경에 맞게 (종료: Ctrl+]
 |------|-----|
 | NVS namespace | `devcfg` |
 | NVS 파티션 offset / size | `0x9000` / `0x6000` (24576 B) |
-| 키 순서 | `wifi_ssid`, `wifi_pass`, `srv_ip`, `srv_port`(u16), `stream_rate`(u8), `transport`(u8), `read_mode`(u8) |
+| 키 | `wifi_ssid`, `wifi_pass`, `srv_ip`, `srv_port`(u16), `stream_rate`(u8), `transport`(u8), `read_mode`(u8), `full_scale_g`(u8) |
 
-> 이 규격은 펌웨어 및 기존 Tauri 설정툴(`config-tool/src-tauri/src/nvs.rs`)과 동일합니다.
-> `nvs_gen.py` 는 그 Rust 구현을 파이썬으로 1:1 포팅한 것으로, 검증된 기준 바이너리
-> (`config-tool/src-tauri/tests_ref_full_nvs.bin`)와 **byte-exact 일치**가 확인됐습니다.
-> ESP-IDF `nvs_partition_gen.py` 결과와도 동일 구조라, 외부 도구 없이 바로 굽기만 하면 됩니다.
+`nvs_gen.py` 가 외부 도구 없이 이 형식의 NVS 바이너리를 만듭니다 (ESP-IDF
+`nvs_partition_gen.py` 와 같은 구조).
 
 ---
 
 ## ⚠️ 보안 주의
 
-- 입력값 기억 파일(`~/.iis3dwb_sensor_setup.json`)에 **WiFi 비밀번호가 평문**으로 저장됩니다.
-  여러 센서 연속 설정 편의를 위한 것이며, **이 PC 안에만** 저장됩니다.
-- 공용 PC에서 작업했다면 작업 후 이 파일을 삭제하세요:
-  ```bash
-  rm ~/.iis3dwb_sensor_setup.json
-  ```
+- WiFi 비밀번호는 **WiFi 비밀번호 칸 옆의 "비밀번호 기억" 을 체크했을 때만** 입력값 기억 파일
+  (`~/.iis3dwb_sensor_setup.json`, 권한 0600)에 **평문**으로 저장됩니다.
+  체크를 해제하면 저장돼 있던 비밀번호도 지워집니다.
+- 여러 센서를 연속으로 설정할 때만 켜고, 끝나면 끄십시오.

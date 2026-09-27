@@ -27,6 +27,10 @@ from pathlib import Path
 
 import fw_manifest
 
+# 배포 패키지는 esptool 을 소스째 vendor/ 에 넣어 온다 (폐쇄망 현장 대비).
+# 개발 트리에는 없으므로 그때는 시스템 esptool 을 찾는다.
+VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
+
 NVS_OFFSET = 0x9000
 NVS_SIZE = 0x6000
 # 보드레이트는 전 구간 115200 으로 고정한다.
@@ -82,6 +86,8 @@ def find_esptool():
 
     탐색 순서:
       0) $IIS3DWB_ESPTOOL (명시적 오버라이드)
+      ½) 패키지의 vendor/esptool — 버전이 고정되고 스텁이 온전하므로 시스템 것보다
+         먼저 쓴다. 폐쇄망에서는 이것이 유일한 경로다.
       1) PATH 의 esptool / esptool.py
          · 라즈베리파이 apt 패키지는 /usr/bin/esptool (esptool.py 가 아니다)
          · ESP-IDF export.sh 를 소싱했다면 IDF venv 쪽이 먼저 잡힌다
@@ -96,6 +102,12 @@ def find_esptool():
     override = os.environ.get("IIS3DWB_ESPTOOL")
     if override:
         _esptool_cache = override.split()
+        return _esptool_cache
+
+    if (VENDOR_DIR / "esptool" / "__init__.py").is_file():
+        _esptool_cache = [sys.executable, "-c",
+                          "import sys; sys.path.insert(0, %r); "
+                          "import esptool; esptool._main()" % str(VENDOR_DIR)]
         return _esptool_cache
 
     for name in ("esptool", "esptool.py"):
@@ -162,6 +174,10 @@ def stub_available(chip="esp32s3"):
 
     스텁이 없으면 --no-stub 으로 ROM 로더만 써서 진행한다. 조금 느리지만
     플래시·검증은 정상 동작한다.
+
+    스텁 파일 배치는 esptool 버전마다 다르다:
+      4.7 이하  targets/stub_flasher/stub_flasher_32s3.json
+      4.8 이상  targets/stub_flasher/1/esp32s3.json  (2/ 는 새 스텁)
     """
     if chip in _stub_cache:
         return _stub_cache[chip]
@@ -173,20 +189,25 @@ def stub_available(chip="esp32s3"):
               "esp8266": "8266"}.get(chip, chip.replace("esp", ""))
 
     found = False
+    roots = []
+    if (VENDOR_DIR / "esptool").is_dir():
+        roots.append(str(VENDOR_DIR / "esptool"))
     try:
         r = subprocess.run(
             [sys.executable, "-c",
              "import esptool, os; print(os.path.dirname(esptool.__file__))"],
             capture_output=True, text=True, timeout=15)
-        roots = [r.stdout.strip()] if r.returncode == 0 and r.stdout.strip() else []
+        if r.returncode == 0 and r.stdout.strip():
+            roots.append(r.stdout.strip())
     except Exception:
-        roots = []
+        pass
     # find_esptool() 이 다른 파이썬/경로를 가리킬 수 있으므로 흔한 경로도 훑는다
     roots += glob.glob("/usr/lib/python3*/dist-packages/esptool")
     roots += glob.glob(str(Path.home() / ".espressif/python_env/*/lib/python*/site-packages/esptool"))
     for root in roots:
-        if root and os.path.exists(os.path.join(
-                root, "targets", "stub_flasher", "stub_flasher_%s.json" % suffix)):
+        sd = os.path.join(root, "targets", "stub_flasher")
+        if os.path.exists(os.path.join(sd, "stub_flasher_%s.json" % suffix)) or \
+                os.path.exists(os.path.join(sd, "1", "%s.json" % chip)):
             found = True
             break
 
@@ -237,17 +258,60 @@ def preflight(port):
         raise EsptoolError(
             "포트가 없습니다: %s" % port,
             "· USB 케이블이 '데이터 전송용'인지 확인하세요 (충전 전용 케이블 불가)\n"
-            "· 케이블을 다시 꽂고 '포트 새로고침' 을 누르세요")
+            "· 케이블을 다시 꽂고 '목록만 갱신' 을 누르세요")
     if not os.access(port, os.W_OK):
         raise EsptoolError(
             "%s 에 쓰기 권한이 없습니다." % port,
-            "· install.sh 를 실행했는지 확인하세요\n"
-            "· dialout 그룹 추가 후에는 **재로그인(또는 재부팅)** 이 필요합니다")
+            "· 패키지 폴더에서 bash run.sh 로 실행했는지 확인하세요 (권한을 설정합니다)\n"
+            "· SSH 로 접속했다면 권한 설정 후 **다시 접속** 해야 합니다 (dialout 그룹)")
     holder = port_holder(port)
     if holder:
         raise PortBusyError(
             "%s 를 다른 프로그램이 사용 중입니다: %s" % (port, holder),
             "· 시리얼 모니터나 수신기를 먼저 종료하세요")
+    if port_write_blocked(port):
+        raise UsbStallError(
+            "USB 포트가 응답하지 않습니다 (bulk OUT 엔드포인트 스톨).",
+            "· 이 증상은 드라이버 재바인딩으로는 복구되지 않고 USB 장치 리셋이 필요합니다\n"
+            "· 자동 복구를 시도하거나, 케이블을 뽑았다 꽂으세요")
+
+
+def port_write_blocked(port, timeout=1.0):
+    """포트에 1바이트를 써 보고 막히면 True (USB 스톨). 판단할 수 없으면 False.
+
+    스톨된 포트에 esptool 을 돌리면 출력이 끊긴 채 IDLE_TIMEOUT(25초)을 다 기다려야
+    스톨로 판정된다 — MAC 주소 확인에서 한 대에 36초가 걸렸다. 쓰기가 1초 안에 안 나가면
+    그것이 곧 스톨이므로 esptool 을 부르기 전에 1초 만에 가려낸다 (2026-09-26 실측:
+    정상 0.01초 / 스톨 1.00초).
+
+    닫기 전에 출력 버퍼를 반드시 버린다. 안 버리면 close() 가 못 보낸 바이트를
+    보내려고 tty closing_wait(기본 30초)만큼 막힌다.
+    """
+    try:
+        import serial
+    except ImportError:
+        return False
+    try:
+        s = serial.Serial(port, BAUD, write_timeout=timeout)
+    except Exception:
+        return False            # 여는 단계의 문제는 esptool 이 자세히 알려 준다
+    try:
+        try:
+            s.write(b"\x00")
+            return False
+        except serial.SerialTimeoutException:
+            return True
+        except Exception:
+            return False
+    finally:
+        try:
+            s.reset_output_buffer()
+        except Exception:
+            pass
+        try:
+            s.close()
+        except Exception:
+            pass
 
 
 # ===================== esptool 실행 =====================
@@ -363,7 +427,7 @@ def _classify(out, rc):
     if "permission denied" in low:
         return EsptoolError(
             "포트 접근 권한이 없습니다.",
-            "· install.sh 실행 후 **재로그인** 이 필요합니다 (dialout 그룹)", output=out)
+            "· 패키지 폴더에서 bash run.sh 로 실행하세요 (SSH 면 그 뒤 다시 접속)", output=out)
     if "no serial data received" in low:
         return EsptoolError(
             "디바이스가 응답하지 않습니다.",
@@ -377,8 +441,9 @@ def _classify(out, rc):
             "· '디바이스 확인' 으로 먼저 연결을 점검해 보세요", output=out)
     if "no module named esptool" in low:
         return EsptoolError(
-            "esptool 이 설치되지 않았습니다.",
-            "· ./install.sh 를 실행하세요 (sudo apt install esptool)", output=out)
+            "esptool 을 찾지 못했습니다.",
+            "· 배포 패키지의 vendor/ 폴더가 빠졌거나 손상됐습니다\n"
+            "· 패키지(tar.gz)를 다시 풀어서 그 폴더에서 실행하세요", output=out)
     return EsptoolError("esptool 이 실패했습니다 (종료코드 %d)." % rc,
                         output=out)
 

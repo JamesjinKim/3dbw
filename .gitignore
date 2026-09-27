@@ -15,6 +15,7 @@ sdkconfig.ci
 # ===== 패키징 산출물 (tools/ 스크립트가 재생성) =====
 # boardcheck/dist/ 는 예외 — ESP-IDF 없이 굽기 위해 커밋한다 (아래 부정 규칙)
 /dist/
+/dist-collector/
 !boardcheck/dist/
 
 # ===== 민감 정보 (실제 WiFi 자격증명) =====
@@ -39,3 +40,6 @@ __pycache__/
 
 # lgpio 가 작업 디렉토리에 만드는 알림 FIFO
 .lgd-nfy*
+
+# 배포 zip (dist/·dist-collector/ 를 묶은 것) — 산출물이라 커밋하지 않는다
+*.zip

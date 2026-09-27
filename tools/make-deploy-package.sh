@@ -158,27 +158,33 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/firmware" "$STAGE/udev" "$STAGE/tools"
 
 # 파이썬 모듈 — 여기 적힌 것만 들어간다 (old/ 가 절대 섞이지 않도록 allowlist)
-PY_FILES="set_sensor_gui.py nvs_gen.py fw_manifest.py esp_flash.py boot_log.py usb_reset.py"
+PY_FILES="set_sensor_gui.py nvs_gen.py fw_manifest.py esp_flash.py boot_log.py usb_reset.py
+          nvs_read.py ports.py provision_log.py helpdoc.py"
 for f in $PY_FILES; do
   if [ -f "$SRC/$f" ]; then
     cp "$SRC/$f" "$STAGE/"
   else
-    echo "   ⚠ 아직 없음(건너뜀): $f"
+    echo "❌ 모듈 없음: $f" >&2; exit 1
   fi
 done
 
+# 폐쇄망 대비 — pyserial·esptool 을 소스째 넣는다 (vendor/ 원본, 해시 검증)
+python3 "$PROJECT_DIR/tools/vendor_extract.py" "$STAGE/vendor" serial intelhex esptool \
+  || { echo "❌ vendor 추출 실패" >&2; exit 1; }
+
 # 사용자 문서
-for f in README.md; do
+for f in README.md help.html; do
   [ -f "$SRC/$f" ] && cp "$SRC/$f" "$STAGE/"
 done
 [ -f "$SRC/사용설명서.html" ] && cp "$SRC/사용설명서.html" "$STAGE/"
 
-# 런처/설치 스크립트 (패키지 루트에 두는 원본)
-for f in install.sh run_gui.sh; do
-  [ -f "$PROJECT_DIR/deploy/$f" ] && cp "$PROJECT_DIR/deploy/$f" "$STAGE/"
+# 진입점/설치 스크립트 (설정툴·수집기 공용 원본). 작업자는 run.sh 만 안다.
+for f in run.sh install.sh; do
+  cp "$PROJECT_DIR/deploy/$f" "$STAGE/" && chmod +x "$STAGE/$f" \
+    || { echo "❌ deploy/$f 없음" >&2; exit 1; }
 done
-[ -f "$PROJECT_DIR/deploy/99-iis3dwb.rules" ] && \
-  cp "$PROJECT_DIR/deploy/99-iis3dwb.rules" "$STAGE/udev/"
+cp "$PROJECT_DIR/deploy/70-iis3dwb.rules" "$STAGE/udev/" \
+  || { echo "❌ deploy/70-iis3dwb.rules 없음" >&2; exit 1; }
 
 # sudo 탈출구
 [ -f "$PROJECT_DIR/tools/usb-recover.sh" ] && \
@@ -205,9 +211,26 @@ PY
 echo "▶ [7/9] staging 점검..."
 ( cd "$STAGE" && for f in *.py; do python3 -m py_compile "$f" || exit 1; done ) \
   && echo "   ✓ py_compile 통과"
+( cd "$STAGE" && bash -n run.sh && bash -n install.sh ) \
+  || { echo "❌ run.sh / install.sh 문법 오류" >&2; exit 1; }
+# 실제 import 점검 — py_compile 은 allowlist 에서 빠진 모듈을 잡지 못한다
+# (0.0.5-test 가 nvs_read 누락으로 실행 즉시 죽은 적이 있다)
+( cd "$STAGE" && python3 -c "import set_sensor_gui" ) \
+  || { echo "❌ staging 에서 set_sensor_gui import 실패 — PY_FILES 누락 확인" >&2; exit 1; }
+echo "   ✓ import 점검 통과"
+# 폐쇄망 점검 — 시스템 site-packages 를 끄고(-S) 패키지 안의 것만으로 도는지
+( cd "$STAGE" && python3 -S -c "
+import sys; sys.path[:0] = ['.', 'vendor']
+import serial, esptool, esp_flash
+assert serial.__file__.startswith('vendor') or '/vendor/' in serial.__file__, serial.__file__
+assert esp_flash.stub_available('esp32s3'), 'vendor esptool 에 esp32s3 스텁이 없다'
+" ) || { echo "❌ 패키지 내장 라이브러리만으로 동작하지 않습니다" >&2; exit 1; }
+( cd "$STAGE" && python3 -S -c "import sys; sys.path[:0]=['vendor']; import esptool; esptool._main()" version >/dev/null ) \
+  || { echo "❌ 내장 esptool 실행 실패" >&2; exit 1; }
+echo "   ✓ 내장 라이브러리 점검 통과 (시스템 패키지 없이)"
 # nvs_gen 자가점검 — Rust 툴과의 byte-exact 보장을 배포 직전에 재확인
 ( cd "$STAGE" && python3 nvs_gen.py >/dev/null ) && echo "   ✓ nvs_gen 자가점검 통과"
-rm -rf "$STAGE/__pycache__"
+find "$STAGE" -name __pycache__ -type d -prune -exec rm -rf {} +
 
 # ---- 8) manifest ----
 echo "▶ [8/9] manifest.json 작성..."
@@ -255,5 +278,4 @@ echo "  sha256 : $(cut -d' ' -f1 "$DIST/$PKGNAME.tar.gz.sha256")"
 echo ""
 echo "사용자 안내:"
 echo "  tar -xzf $PKGNAME.tar.gz"
-echo "  cd $PKGNAME && ./install.sh     # 최초 1회 (재로그인 필요할 수 있음)"
-echo "  ./run_gui.sh"
+echo "  cd $PKGNAME && bash run.sh      # 처음엔 USB 권한 설정까지 (인터넷 불필요)"

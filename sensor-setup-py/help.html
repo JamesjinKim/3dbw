@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHT 진동센서 설정 — 사용설명서</title>
+<!--
+  배포판에 포함되는 오프라인 설명서.
+  인터넷이 없는 라즈베리파이에서 열리므로 **외부 폰트·스크립트·이미지를
+  일절 참조하지 않는다.** 이 파일 하나만 있으면 된다.
+-->
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1b1f24; --dim:#5b6570; --line:#e1e6ea;
+    --accent:#0b6b3a; --warn:#8a5a00; --bad:#a3282f;
+    --card:#f6f8fa; --code:#f0f3f6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#14171a; --fg:#e6eaee; --dim:#9aa5b1; --line:#2a3138;
+      --accent:#4cc38a; --warn:#d9a441; --bad:#e5707a;
+      --card:#1b1f24; --code:#1f242a;
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth; scroll-padding-top:1rem}
+  body{margin:0; background:var(--bg); color:var(--fg);
+       font:16px/1.75 "Noto Sans KR","Malgun Gothic",system-ui,sans-serif;
+       -webkit-text-size-adjust:100%}
+  .wrap{max-width:900px; margin:0 auto; padding:32px 20px 80px}
+  header{border-bottom:2px solid var(--line); padding-bottom:20px; margin-bottom:8px}
+  h1{font-size:1.9rem; margin:0 0 6px; letter-spacing:-.02em}
+  .sub{color:var(--dim); margin:0}
+  h2{font-size:1.35rem; margin:44px 0 12px; padding-top:14px;
+     border-top:1px solid var(--line)}
+  h3{font-size:1.08rem; margin:26px 0 8px}
+  p,li{margin:8px 0}
+  ul,ol{padding-left:22px}
+  code,kbd{background:var(--code); border-radius:4px; padding:1px 6px;
+           font-family:"DejaVu Sans Mono",ui-monospace,monospace; font-size:.9em}
+  pre{background:var(--code); border:1px solid var(--line); border-radius:8px;
+      padding:14px 16px; overflow-x:auto; font-size:.88rem; line-height:1.6}
+  pre code{background:none; padding:0}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:.94rem}
+  th,td{border:1px solid var(--line); padding:8px 11px; text-align:left;
+        vertical-align:top}
+  th{background:var(--card); font-weight:600}
+  td.num{text-align:right; font-family:"DejaVu Sans Mono",ui-monospace,monospace}
+  .note,.warn,.bad{border-left:4px solid; border-radius:0 8px 8px 0;
+                   padding:12px 16px; margin:16px 0; background:var(--card)}
+  .note{border-color:var(--accent)} .warn{border-color:var(--warn)}
+  .bad{border-color:var(--bad)}
+  .note b{color:var(--accent)} .warn b{color:var(--warn)} .bad b{color:var(--bad)}
+  nav{background:var(--card); border:1px solid var(--line); border-radius:10px;
+      padding:14px 20px; margin:24px 0 8px}
+  nav ol{margin:6px 0 0; padding-left:20px; columns:2; column-gap:28px}
+  nav a{color:inherit}
+  @media (max-width:640px){ nav ol{columns:1} }
+  a{color:var(--accent)}
+  .k{color:var(--dim); font-size:.9rem}
+  .step{background:var(--card); border:1px solid var(--line); border-radius:10px;
+        padding:4px 20px 14px; margin:16px 0}
+  .step h3{margin-top:16px}
+  footer{margin-top:56px; padding-top:18px; border-top:1px solid var(--line);
+         color:var(--dim); font-size:.88rem}
+  @media print{ body{background:#fff;color:#000} nav{display:none}
+    h2{page-break-after:avoid} table,pre,.step{page-break-inside:avoid} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>SHT 진동센서 설정 — 사용설명서</h1>
+  <p class="sub">센서에 펌웨어를 굽고 WiFi·USB 직결 설정을 넣는 방법</p>
+</header>
+
+<nav>
+  <b>차례</b>
+  <ol>
+    <li><a href="#prep">시작하기 전에</a></li>
+    <li><a href="#screen">화면 읽는 법</a></li>
+    <li><a href="#one">센서 1대 — 기본 절차</a></li>
+    <li><a href="#two">센서 2대 — 순차 절차</a></li>
+    <li><a href="#settings">설정 항목 설명</a></li>
+    <li><a href="#verify">제대로 됐는지 확인</a></li>
+    <li><a href="#trouble">문제가 생기면</a></li>
+    <li><a href="#extra">공장 초기화·이력</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="prep">1. 시작하기 전에</h2>
+
+<h3>순서가 중요합니다</h3>
+<pre><code>① 보드 진단  →  ② 펌웨어 굽기  →  ③ 설정 주입  →  ④ 데이터 수집
+  입고 검사        ─── 이 설명서 ───        수집기 패키지</code></pre>
+
+<div class="warn">
+  <b>보드 진단(입고 검사)은 이 패키지에 들어 있지 않습니다.</b> 출하 전에 제조·배포
+  담당자가 <code>boardcheck</code> 로 검사한 보드를 받는 것이 원칙입니다.
+  진단을 거치지 않은 보드에서 ① 이 <b>"센서 미감지"</b> 로 멈추면 하드웨어 문제이므로
+  배포 담당자에게 보드 점검을 요청하십시오. 펌웨어를 다시 구워도 해결되지 않습니다.
+</div>
+
+<h3>실행 — 명령은 하나입니다</h3>
+<p>받은 <code>iis3dwb-setup-&lt;버전&gt;.tar.gz</code> 를 풀고, 그 폴더에서 터미널로
+   <code>bash run.sh</code> 를 실행합니다. 설치 단계가 따로 없습니다.</p>
+<pre><code>tar -xzf iis3dwb-setup-&lt;버전&gt;.tar.gz
+cd iis3dwb-setup-&lt;버전&gt;
+bash run.sh</code></pre>
+<table>
+  <tr><th>언제</th><th>run.sh 가 하는 일</th></tr>
+  <tr><td><b>처음 실행</b></td>
+      <td>환경을 점검하고, 빠진 USB 포트 권한(udev 규칙·사용자 그룹)을 설정한 뒤 창을
+          띄웁니다. 이때 <b>관리자 비밀번호</b>를 물을 수 있습니다.
+          <b>재로그인은 필요 없습니다.</b> 바탕화면에 <b>SHT 진동센서 설정</b>
+          아이콘도 만듭니다.</td></tr>
+  <tr><td><b>두 번째부터</b></td>
+      <td>점검만 하고 바로 창을 띄웁니다. 비밀번호를 묻지 않습니다.
+          바탕화면 아이콘을 <b>더블클릭</b>해도 됩니다
+          (“실행할까요?” 를 묻는 창이 뜨면 <b>실행</b>).</td></tr>
+</table>
+<div class="warn">
+  <b><code>./run.sh</code> 가 아니라 <code>bash run.sh</code> 로 실행하세요.</b>
+  USB 메모리(FAT 포맷)를 거쳐 복사하면 실행권한이 사라져 <code>./run.sh</code> 는
+  “허가 거부” 가 납니다. <code>bash run.sh</code> 는 권한과 상관없이 동작합니다.
+</div>
+<p class="k">
+  <b>새 버전으로 바꿀 때:</b> 새 tar.gz 를 옆 폴더에 풀고 그 폴더에서
+  <code>bash run.sh</code> 를 한 번 실행하면 끝입니다. 입력해 둔 값은 버전과 상관없이
+  그대로 남고, 바탕화면 아이콘은 마지막으로 실행한 폴더를 가리키도록 바뀝니다.
+  문제가 있으면 예전 폴더에서 실행해 되돌아가면 됩니다.
+</p>
+<p class="k">
+  <b>SSH 로 접속해 쓰는 경우:</b> 처음 실행에서 권한을 설정한 뒤 한 번 로그아웃했다가
+  다시 접속해야 적용됩니다. 화면(데스크톱)에서 쓸 때는 필요 없습니다.
+  아무것도 바꾸지 않고 점검만 하려면 <code>bash install.sh --check</code>.
+</p>
+<p class="k">
+  이 설명서는 화면 왼쪽 아래 <b>도움말</b> 버튼으로 언제든 다시 열 수 있습니다
+  (<code>python3 helpdoc.py</code> 로도 열립니다).
+</p>
+<p><b>인터넷(폐쇄망)과 ESP-IDF 는 필요 없습니다.</b> 구울 펌웨어는 패키지의
+<code>firmware/</code> 에, 굽는 도구(esptool)와 시리얼 라이브러리(pyserial)는
+<code>vendor/</code> 에 들어 있습니다. OS 쪽에 필요한 것은 Python 3.7 이상과 tkinter
+뿐이며, 둘 다 Raspberry Pi OS <b>Desktop</b> 이미지에 기본으로 들어 있습니다.</p>
+
+<div class="bad">
+  <b>화면 맨 위가 빨간 글씨라면 진행하지 마세요.</b>
+  <code>번들 펌웨어 없음 — ① 펌웨어 굽기 사용 불가</code> 가 보이면 패키지가
+  온전하지 않습니다. 배포 담당자에게 정상 패키지를 요청하십시오.
+  정상이면 <code>패키지 1.0.0 · 굽기 직전 무결성을 확인합니다</code> 처럼
+  (숫자는 받은 패키지 버전)
+  초록 글씨가 보입니다.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="screen">2. 화면 읽는 법</h2>
+
+<h3>진동센서 목록 — 어느 보드에 작업하는지</h3>
+<pre><code>┌ 진동센서 목록 ──────────────────────────────────────────┐
+│ [MAC 주소 확인] [목록만 갱신]                             │
+│  USB 포트     장치      MAC                 이력         │
+│  usb-0:1.1  ttyACM1  9c:13:9e:90:a9:f0    대기    ←선택 │
+│  usb-0:1.2  ttyACM0  9c:13:9e:84:d5:50    완료 16:02    │
+│                                                          │
+│ 대상: 9c:13:9e:90:a9:f0  (ttyACM1 · usb-0:1.1)           │
+│ 이 보드에 대한 작업 이력이 없습니다 (새 보드).             │
+└──────────────────────────────────────────────────────────┘</code></pre>
+
+<table>
+  <tr><th>항목</th><th>뜻</th></tr>
+  <tr><td><b>USB 포트</b></td>
+      <td>보드가 꽂힌 <b>구멍</b>. 재부팅·재연결에도 변하지 않습니다.</td></tr>
+  <tr><td><b>장치</b></td>
+      <td><code>ttyACM0</code> 같은 번호. <b>꽂는 순서에 따라 바뀝니다</b> —
+          이것으로 보드를 구분하지 마세요.</td></tr>
+  <tr><td><b>MAC</b></td>
+      <td><b>보드를 구분하는 유일한 값.</b> <code>MAC 주소 확인</code> 을 누르거나
+          <code>② 설정 주입</code> 을 하면 채워집니다. 아직이면 <code>미확인</code>.</td></tr>
+  <tr><td><b>이력</b></td>
+      <td>이 보드에 직전에 넣은 설정. 처음이면 <code>대기</code>.</td></tr>
+</table>
+
+<div class="note">
+  <b>왜 MAC 을 따로 읽어야 하나요?</b>
+  이 보드의 USB 브리지칩에는 고유 일련번호가 없습니다. 두 대를 꽂아도
+  시스템에는 같은 이름으로 보여 <b>포트 번호만으로는 어느 보드인지 알 수 없습니다.</b>
+  MAC 은 보드마다 다르고 읽을 수 있는 유일한 식별자입니다.
+</div>
+
+<h3>두 버튼의 차이</h3>
+<table>
+  <tr><th>버튼</th><th>하는 일</th><th>걸리는 시간</th></tr>
+  <tr><td><b>MAC 주소 확인</b></td>
+      <td>모든 포트의 MAC 을 읽습니다. <b>보드가 리셋됩니다.</b></td>
+      <td>포트당 약 3초</td></tr>
+  <tr><td><b>목록만 갱신</b></td>
+      <td>연결 상태만 다시 봅니다. 보드를 건드리지 않습니다.</td>
+      <td>즉시</td></tr>
+</table>
+
+<h3>작업 버튼</h3>
+<table>
+  <tr><th>버튼</th><th>하는 일</th></tr>
+  <tr><td>현재 설정 읽기</td>
+      <td>선택한 보드에 저장된 값을 아래 입력란에 채웁니다.
+          <b>없는 값은 비워 둡니다</b> — 이미 입력한 내용을 지우지 않습니다.
+          다른 PC 에서 설정한 보드처럼 <b>이력이 없는 보드의 설정을 알아낼 때</b>,
+          설정 일부만 바꿔 다시 넣을 때 씁니다.</td></tr>
+  <tr><td><b>① 펌웨어 굽기</b></td>
+      <td>펌웨어를 씁니다. 약 1~2분. <b>저장된 설정(NVS)은 지워지지 않습니다.</b></td></tr>
+  <tr><td><b>② 설정 주입</b></td>
+      <td>입력값을 보드에 넣고, <b>보드가 되울린 값을 입력값과 대조</b>합니다.</td></tr>
+  <tr><td>취소</td><td>진행 중인 단계를 중단합니다</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="one">3. 센서 1대 — 기본 절차</h2>
+
+<div class="step">
+<h3>1단계 — 보드를 꽂고 확인</h3>
+<p><b>MAC 주소 확인</b> 을 누릅니다. 목록에 MAC 이 채워지고, 그 보드가
+자동으로 선택됩니다.</p>
+<p>보드는 <b>한 대씩 차례로</b> 읽습니다 (한 대에 약 3초). 읽는 동안 목록의 MAC 칸에
+   진행 상황이 나오고 아래 막대가 움직입니다.</p>
+<table>
+  <tr><th>MAC 칸</th><th>뜻</th></tr>
+  <tr><td><code>대기 — 다음 차례</code></td><td>앞 보드를 읽는 중. 곧 차례가 옵니다 (문제 아님)</td></tr>
+  <tr><td><code>확인 중…</code></td><td>지금 이 보드를 읽고 있습니다</td></tr>
+  <tr><td><code>USB 복구 중…</code></td><td>USB 통신이 멈춰 있어 도구가 <b>자동으로 복구</b>한 뒤 다시 읽습니다 (몇 초 더 걸림)</td></tr>
+  <tr><td><code>9c:13:…</code></td><td>완료</td></tr>
+</table>
+<p class="k">MAC 이 <code>읽기 실패</code> 로 나오면 <a href="#trouble">7장</a>을 보세요.</p>
+</div>
+
+<div class="step">
+<h3>2단계 — 설정 입력</h3>
+<p><b>데이터 전송 방식</b>을 먼저 고릅니다. 이 선택이 나머지를 결정합니다.</p>
+<ul>
+  <li><b>USB 직결 (시리얼)</b> — 케이블로 연결된 PC 가 받습니다. WiFi 입력란이
+      회색으로 잠깁니다 (값은 지워지지 않습니다).</li>
+  <li><b>WiFi (UDP)</b> — SSID·비밀번호·라즈베리파이 IP·수신 포트를 입력합니다.</li>
+</ul>
+<p>이어서 <b>측정 설정</b>(속도·읽기 방식·범위)을 정합니다 →
+   <a href="#settings">5장</a></p>
+</div>
+
+<div class="step">
+<h3>3단계 — ① 펌웨어 굽기</h3>
+<p>확인 대화상자에서 <b>예</b>를 누릅니다. 약 1~2분 걸립니다.</p>
+<div class="bad" style="margin:10px 0">
+  <b>진행 중 USB 케이블을 뽑지 마세요.</b> 펌웨어가 반쯤 써진 상태가 되면
+  보드가 부팅하지 못합니다 (다시 구우면 복구됩니다).
+</div>
+<p>끝나면 로그에 <code>✅ 펌웨어 쓰기 완료 (이미지 3개 검증 3회)</code> 가 나오고,
+   이어서 부팅 로그를 읽어 판정합니다.</p>
+<p class="k">새 보드는 아직 설정이 없으므로 이 단계에서는 <code>자격증명 출처: Kconfig 폴백
+   (NVS 미설정)</code>, <code>스트리밍: 미시작</code> 으로 나오는 것이 정상입니다.
+   ② 설정 주입 후에 시작됩니다.</p>
+</div>
+
+<div class="step">
+<h3>4단계 — ② 설정 주입</h3>
+<p>주입 후 <b>보드가 되울린 설정을 입력값과 대조</b>합니다. 이것이 핵심입니다 —
+   "저장은 했지만 반영되지 않은" 상태를 걸러냅니다.</p>
+<p>로그에서 이런 줄을 확인하십시오.</p>
+<pre><code>펌웨어가 읽은 설정: 서버 192.168.0.77:9000, rate=4, transport=2, fs=±4g
+스트리밍: 시작됨 ✅</code></pre>
+<p>USB 직결이면
+   <code>WiFi: skipped_serial_mode</code> · <code>자격증명 출처: 확인 불가</code> 가 함께
+   나오는데, WiFi 를 쓰지 않으므로 정상입니다.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="two">4. 센서 2대 — 순차 절차</h2>
+
+<div class="note">
+  <b>두 대를 함께 꽂아도 됩니다. 다만 작업은 한 대씩 차례로 합니다.</b>
+  도구가 그렇게 강제합니다 — 굽는 동안 대상 선택이 잠깁니다.
+</div>
+
+<h3>왜 동시에 하지 않나요</h3>
+<ul>
+  <li>플래시 도구는 포트를 독점합니다. 동시 실행은 서로의 보드 리셋에 영향을 줍니다.</li>
+  <li><b>USB 통신이 멈춰 복구할 때 포트 번호가 재배치됩니다.</b> 동시 진행 중이면
+      다른 보드의 경로가 바뀌어, 엉뚱한 보드에 쓸 수 있습니다.</li>
+  <li>동시에 해서 얻는 시간은 몇 분뿐입니다.</li>
+</ul>
+
+<h3>절차</h3>
+<ol>
+  <li><b>두 보드를 모두 꽂습니다.</b></li>
+  <li><b>MAC 주소 확인</b> — 목록에 MAC 두 개가 나옵니다.
+      <b>어느 MAC 이 어느 구멍인지 적어 두세요.</b></li>
+  <li><b>1번(위쪽 줄) 보드를 클릭해 선택</b>합니다. 아래 안내문에
+      <code>대상: 9c:13:…</code> 가 맞는지 확인합니다.</li>
+  <li>설정을 입력하고 <b>① 펌웨어 굽기</b> → 끝나면 <b>② 설정 주입</b>.
+      진행 중에는 다른 보드를 고를 수 없습니다 (한 번에 한 대만).</li>
+  <li><b>2번 보드를 클릭해 선택</b>하고 <b>① → ②</b> 를 반복합니다.
+      설정은 입력란에 그대로 남아 있으니 다시 입력할 필요가 없습니다.</li>
+  <li>끝나면 목록의 <b>이력</b> 칸에 두 보드 모두 <code>완료 HH:MM</code> 이
+      표시됩니다.</li>
+</ol>
+
+<div class="bad">
+  <b>WiFi(UDP) 로 두 대를 쓸 때는 수신 포트를 서로 다르게 입력하십시오.</b>
+  두 센서가 같은 IP·같은 포트로 보내면 <b>수신기가 두 데이터를 한 파일에 섞고,
+  유실이 실제보다 훨씬 크게 잡힙니다.</b>
+  <table style="margin:10px 0 0">
+    <tr><th>센서</th><th>라즈베리파이 IP</th><th>수신 포트</th></tr>
+    <tr><td>첫 번째</td><td>192.168.0.77</td><td class="num">9000</td></tr>
+    <tr><td>두 번째</td><td>192.168.0.77</td><td class="num">9001</td></tr>
+  </table>
+  <p style="margin:10px 0 0">받는 쪽도 포트마다 하나씩 띄웁니다.</p>
+  받는 쪽(수집기 패키지 폴더에서):
+  <pre style="margin:8px 0 0"><code>bash run.sh udp --port 9000 --out sensor1.csv &amp;
+bash run.sh udp --port 9001 --out sensor2.csv &amp;</code></pre>
+  <p style="margin:10px 0 0" class="k">USB 직결(<code>transport=2</code>)에서는
+  포트가 쓰이지 않으므로 신경 쓸 필요가 없습니다.</p>
+</div>
+
+<div class="warn">
+  <b>설정은 보드에 붙고, 센서 번호는 USB 구멍에 붙습니다.</b>
+  주입한 설정은 보드를 따라가지만, 수집기가 부르는 <code>센서 1 / 센서 2</code> 는
+  <b>꽂힌 구멍</b>이 정합니다. 현장에서 다른 구멍에 꽂으면 번호가 달라집니다.
+  센서를 교체할 때는 같은 구멍에 꽂으십시오.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="settings">5. 설정 항목 설명</h2>
+
+<h3>데이터 전송 방식</h3>
+<table>
+  <tr><th>선택</th><th>쓰는 경우</th><th>받는 방법</th></tr>
+  <tr><td><b>USB 직결 (시리얼)</b></td>
+      <td>WiFi 가 없거나 불안정한 현장. 최대 26.6 kHz.</td>
+      <td>수집기 패키지의 <code>bash run.sh</code></td></tr>
+  <tr><td><b>WiFi (UDP)</b></td>
+      <td>케이블 없이 떨어진 곳에 둘 때</td>
+      <td>수집기 패키지의 <code>bash run.sh udp</code></td></tr>
+</table>
+<p class="k">둘은 배타 선택입니다. USB 직결을 고르면 보드는 WiFi 에 접속하지 않습니다.</p>
+
+<h3>측정 속도</h3>
+<p><b>기본은 1 kHz</b> 입니다. 데이터량을 가장 적게 하기 위한 값이며, 목적에 맞게
+   현장에서 고르십시오. 1분·1대 CSV 기준 대략 1 kHz ≈ 4 MB, 26.6 kHz ≈ 112 MB 입니다.</p>
+<div class="bad">
+  <b>주파수 분석(FFT)이 목적이라면 26.6 kHz 를 고르십시오.</b>
+  더 낮은 설정은 펌웨어가 저역통과 필터 없이 샘플을 솎아내는 방식이라,
+  <b>높은 주파수 성분이 낮은 주파수 자리로 접혀 들어옵니다</b>(에일리어싱).
+  예를 들어 3.3 kHz 로 받으면 실제 4 kHz 진동이 <b>667 Hz 에 없는 봉우리</b>로
+  나타납니다.
+  <p style="margin:10px 0 0">RMS·피크 같은 <b>전체 진동량만</b> 보신다면 낮은 레이트도
+  정확합니다. 자세한 근거는 수집기 설명서
+  (수집기 패키지의 <code>help.html</code>) 5장에 있습니다.</p>
+</div>
+
+<h3>데이터 읽기 방식</h3>
+<table>
+  <tr><th>선택</th><th>설명</th></tr>
+  <tr><td><b>인터럽트 (기본·권장)</b></td>
+      <td>센서가 알려줄 때 읽습니다. 26.6 kHz 전 속도가 나옵니다.
+          입고 검사(boardcheck)에서 INT1 이 PASS 인 보드에서 쓰십시오.</td></tr>
+  <tr><td>폴링</td>
+      <td>주기적으로 읽습니다. INT1 배선에 문제가 있을 때의 대안입니다.</td></tr>
+</table>
+
+<h3>측정 범위 (풀스케일)</h3>
+<table>
+  <tr><th>범위</th><th>분해능</th><th>쓰는 경우</th></tr>
+  <tr><td>±2 g</td><td class="num">0.061 mg</td><td>미세 진동</td></tr>
+  <tr><td><b>±4 g</b></td><td class="num">0.122 mg</td><td>일반 (기본)</td></tr>
+  <tr><td>±8 g</td><td class="num">0.244 mg</td><td>강한 진동</td></tr>
+  <tr><td>±16 g</td><td class="num">0.488 mg</td><td>충격·낙하</td></tr>
+</table>
+<div class="warn">
+  <b>범위를 넘는 진동은 잘려서 기록됩니다(클리핑).</b> 수집한 CSV 의
+  <code>_raw</code> 값이 <code>±32767</code> 에 붙어 있으면 범위를 키워 다시
+  측정하십시오. 반대로 너무 크게 잡으면 미세 진동의 분해능이 떨어집니다.
+  <b>측정 단위 환산은 수집기가 자동으로 합니다</b> — 범위 값이 데이터에 함께
+  실려 가기 때문입니다.
+</div>
+
+<h3>비밀번호 기억</h3>
+<p><b>WiFi 비밀번호</b> 입력란 오른쪽의 체크 상자입니다 (USB 직결에서는 비활성).
+   체크하면 WiFi 비밀번호를 이 PC 에 저장합니다(권한 0600). 체크를 해제하면
+   <b>이미 저장돼 있던 비밀번호도 지웁니다.</b> 여러 센서를 연속으로 설정할 때만
+   켜고, 끝나면 끄시는 것을 권합니다.</p>
+
+<!-- ============================================================ -->
+<h2 id="verify">6. 제대로 됐는지 확인</h2>
+
+<h3>주입 직후 — 로그에서</h3>
+<table>
+  <tr><th>보여야 하는 것</th><th>뜻</th></tr>
+  <tr><td><code>자격증명 출처: NVS (설정툴 주입값) ✅</code></td>
+      <td>보드가 <b>주입한 WiFi 를 쓰고 있다</b>는 뜻 (<b>WiFi 모드만</b> —
+          USB 직결이면 <code>확인 불가</code> · <code>WiFi: skipped_serial_mode</code> 가 정상)</td></tr>
+  <tr><td><code>펌웨어가 읽은 설정: 서버 … rate=… transport=… fs=…</code></td>
+      <td>보드가 되울린 값. <b>입력값과 같아야 합니다.</b></td></tr>
+  <tr><td><code>스트리밍: 시작됨 ✅</code></td><td>데이터를 보내기 시작했다</td></tr>
+</table>
+
+<div class="bad">
+  <b><code>자격증명 출처: Kconfig — 개발 빌드, NVS 무시 ❌</code></b> 가 보이면
+  번들 펌웨어가 <b>개발용</b>입니다. 이 펌웨어는 설정툴의 WiFi 입력을 무시합니다.
+  배포 담당자에게 정상 패키지를 요청하십시오. (도구가 굽기 전에 막지만,
+  다른 경로로 구운 보드라면 이 메시지로 드러납니다)
+</div>
+
+<h3>불일치가 나오면</h3>
+<p><b>설정 불일치</b> 대화상자에 어느 항목이 다른지 나옵니다. 케이블을 확인하고
+   <b>② 설정 주입</b>을 다시 실행하십시오.</p>
+
+<h3>나중에 다시 확인</h3>
+<p>보드를 꽂고 <b>현재 설정 읽기</b> 를 누르면 지금 들어 있는 값이 입력란에 채워집니다.
+   비밀번호는 <b>길이만</b> 표시됩니다.</p>
+
+<!-- ============================================================ -->
+<h2 id="trouble">7. 문제가 생기면</h2>
+
+<table>
+  <tr><th>증상</th><th>확인할 것</th></tr>
+  <tr><td>목록이 비어 있다</td>
+      <td>충전 전용 USB 케이블인 경우가 대부분입니다. 데이터 전송용으로 바꾸고
+          <b>목록만 갱신</b>을 누르세요.</td></tr>
+  <tr><td>MAC 이 <code>읽기 실패</code></td>
+      <td>USB 가 멈춘 경우는 도구가 이미 자동 복구를 시도했습니다. 그래도 실패했다면
+          케이블을 뽑았다 꽂고 <b>MAC 주소 확인</b> 을 다시 누르세요. 계속 같은 구멍에서만
+          실패하면 케이블이나 USB 구멍을 바꿔 보세요. 원인은 아래 로그에 나옵니다.</td></tr>
+  <tr><td><code>포트 사용 중</code></td>
+      <td>다른 프로그램이 그 포트를 쓰고 있습니다. 수집기나 시리얼 모니터를
+          닫으세요.</td></tr>
+  <tr><td>굽는 중 멈춘다</td>
+      <td>라즈베리파이에서 흔한 USB 증상입니다. 도구가 <b>장치를 리셋하고 한 번 더
+          시도할지</b> 묻습니다 — <b>예</b>를 누르세요.</td></tr>
+  <tr><td><code>./run.sh</code> 가 “허가 거부”</td>
+      <td>USB 메모리로 복사하면서 실행권한이 사라진 것입니다. <code>bash run.sh</code>
+          로 실행하세요.</td></tr>
+  <tr><td>아이콘을 더블클릭하면 “처음 한 번은 USB 권한 설정이 필요합니다”</td>
+      <td>권한 설정은 비밀번호 입력이 필요해 아이콘으로는 할 수 없습니다. 창에 나온
+          폴더에서 터미널로 <code>bash run.sh</code> 를 한 번 실행하세요.</td></tr>
+  <tr><td>아이콘을 더블클릭해도 아무 반응이 없다</td>
+      <td>패키지 폴더를 옮겼거나 지웠을 수 있습니다. 지금 쓰는 폴더에서
+          <code>bash run.sh</code> 를 한 번 실행하면 아이콘이 다시 만들어집니다.</td></tr>
+  <tr><td>“실행 환경에 문제가 있어 시작할 수 없습니다”</td>
+      <td>터미널에서 <code>bash run.sh</code> 를 실행하면 ❌ 로 원인이 표시됩니다.
+          <code>tkinter 가 없어</code> 는 Lite 이미지라 GUI 를 쓸 수 없다는 뜻이고,
+          <code>패키지에서 불러오지 못했습니다</code> 는 패키지 손상입니다 —
+          tar.gz 를 다시 푸세요.</td></tr>
+  <tr><td>권한 오류</td>
+      <td>패키지 폴더에서 터미널로 <code>bash run.sh</code> 를 다시 실행하면 빠진 권한을
+          설정합니다. SSH 로 접속해 쓰는 경우에만 그 뒤 <b>다시 접속</b>하십시오.
+          <code>bash install.sh --check</code> 로 무엇이 빠졌는지 볼 수 있습니다.</td></tr>
+  <tr><td>주입은 됐는데 데이터가 안 온다</td>
+      <td>전송 방식과 받는 방법이 맞는지 보세요. USB 직결이면
+          수집기 패키지의 <code>bash run.sh</code>, WiFi 면 <code>bash run.sh udp</code> 입니다.</td></tr>
+  <tr><td>WiFi 2대인데 유실이 크다</td>
+      <td><b>두 센서의 수신 포트가 같은지</b> 확인하세요 →
+          <a href="#two">4장</a></td></tr>
+  <tr><td>창이 닫히지 않는다</td>
+      <td><kbd>Esc</kbd> 또는 <kbd>Ctrl</kbd>+<kbd>Q</kbd></td></tr>
+</table>
+
+<p><b>로그 저장</b> 버튼으로 화면 로그를 파일로 남길 수 있습니다. 문의할 때
+   함께 보내 주시면 원인을 빨리 찾을 수 있습니다.</p>
+
+<!-- ============================================================ -->
+<h2 id="extra">8. 공장 초기화·작업 이력</h2>
+
+<h3>공장 초기화</h3>
+<p>화면 오른쪽 아래의 붉은 <b>공장 초기화</b> 를 누르면 보드에 저장된 설정을
+   모두 지웁니다. <b>펌웨어는 지워지지 않습니다.</b></p>
+<div class="warn">
+  되돌릴 수 없습니다. 확인 대화상자가 한 번 나옵니다.
+  초기화 후에는 <b>② 설정 주입</b>으로 다시 설정하면 됩니다.
+</div>
+
+<h3>작업 이력 — 어느 보드에 무엇을 넣었나</h3>
+<p>설정 주입이 성공하면 <b>MAC 별로 기록</b>됩니다. 목록의 <b>이력</b> 칸에
+   <code>완료 16:02 · USB 직결</code> 처럼 표시되고, 명령으로 자세히 볼 수 있습니다.</p>
+<pre><code>python3 provision_log.py                    # 전체
+python3 provision_log.py 9c:13:9e:90:a9:f0  # 한 보드만</code></pre>
+<pre><code>9c:13:9e:90:a9:f0   (2026-09-23T16:02:11)
+  센서 1 · 슬롯 usb-0:1.1
+  전송 USB 직결
+  측정 26.6 kHz · ±4g · 인터럽트
+  펌웨어 95eb648 (패키지 1.0.0)</code></pre>
+<p class="k"><b>WiFi 비밀번호는 기록하지 않습니다.</b></p>
+
+<footer>
+  SHT 진동센서 설정 · 이 문서는 인터넷 없이 열립니다 ·
+  수집·분석 방법은 수집기 패키지의 <code>help.html</code> 을 보십시오.
+</footer>
+
+</div>
+</body>
+</html>
