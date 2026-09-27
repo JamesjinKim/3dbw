@@ -492,6 +492,11 @@ _pay = struct.pack("<3h", 0, 0, 8197) * 200             # ±4g 에서 Z ≈ 1000
 for _seq in (1, 2, 4):                                  # 3 이 빠짐 → 유실 1
     _tx.sendto(HEADER_V2.pack(MAGIC, 2, 4, 200, _seq, _seq, 4, 0) + _pay, ("127.0.0.1", _port))
 _tx.sendto(b"not a packet", ("127.0.0.1", _port))
+# 앞의 데이터그램을 읽기 스레드가 다 처리한 뒤에 켠다 — 먼저 켜면 앞 패킷이 큐에 들어가
+# 시험이 우연에 따라 통과/실패한다 (패키지 상태에서 실제로 한 번 실패했다)
+_t0 = time.monotonic()
+while _ul.stats.resync_bytes == 0 and time.monotonic() - _t0 < 2.0:
+    time.sleep(0.01)
 _ul.recording = True
 _tx.sendto(HEADER_V2.pack(MAGIC, 2, 4, 200, 5, 5, 4, 0) + _pay, ("127.0.0.1", _port))
 time.sleep(0.5)
