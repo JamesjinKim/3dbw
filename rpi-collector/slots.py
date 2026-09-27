@@ -179,7 +179,7 @@ def load_mapping():
     return {}
 
 
-def save_mapping(mapping, din_map=None):
+def save_mapping(mapping, din_map=None, wifi_map=None):
     """{슬롯키: 센서이름} 저장. 상위 폴더가 없으면 만든다.
 
     포토센서 배정(din_map)을 함께 넘기면 갱신하고, 생략하면 기존 값을 보존한다.
@@ -190,6 +190,10 @@ def save_mapping(mapping, din_map=None):
                                                  for k, v in din_map.items()}
     if din:
         doc["din"] = din
+    wifi = load_wifi_map() if wifi_map is None else {str(k): int(v)
+                                                    for k, v in wifi_map.items()}
+    if wifi:
+        doc["wifi"] = wifi
     SLOTS_PATH.write_text(json.dumps(doc, ensure_ascii=False, indent=2),
                           encoding="utf-8")
 
@@ -213,23 +217,47 @@ def _raw_din_map():
 
 
 def load_din_map(names=None):
-    """{센서이름: DIN번호}. 설정에 없는 이름은 순서대로 1,2,3… 을 준다."""
+    """{센서이름: DIN번호}. 설정에 없는 이름은 **센서 번호와 같은 DIN**(센서 2 → DIN2)을,
+    그 DIN 이 이미 쓰였거나 번호가 아니면 남는 것 중 가장 작은 DIN 을 준다.
+
+    예전에는 이름 순서대로 1, 2 … 를 줘서, WiFi 센서 2 만 있으면 DIN1 을 바라봤다.
+    """
     saved = _raw_din_map()
     if names is None:
         return saved
     out = {}
-    nxt = 1
     used = set(saved.get(n) for n in names if n in saved)
     for n in sorted(names):
         if n in saved:
             out[n] = saved[n]
             continue
-        while nxt in used:
-            nxt += 1
-        out[n] = nxt
-        used.add(nxt)
-        nxt += 1
+        want = int(n) if n.isdigit() else 0
+        if not (1 <= want <= 4) or want in used:
+            want = next(d for d in range(1, 64) if d not in used)
+        out[n] = want
+        used.add(want)
     return out
+
+
+# ---------- WiFi 센서 ----------
+#
+# WiFi(UDP)로 보내는 센서는 USB 구멍이 아니라 **수신 포트**로 구분한다 {센서이름: 포트}.
+# 같은 이름의 USB 구멍이 매핑돼 있어도(전원용으로 꽂아 둔 경우) 그 구멍은 데이터로
+# 열지 않는다. 설정툴(SHT 진동센서 설정)에서 센서마다 다른 포트를 넣어야 한다.
+
+def load_wifi_map():
+    try:
+        d = json.loads(SLOTS_PATH.read_text(encoding="utf-8"))
+        if isinstance(d, dict) and isinstance(d.get("wifi"), dict):
+            return {str(k): int(v) for k, v in d["wifi"].items()}
+    except (OSError, ValueError, TypeError):
+        pass
+    return {}
+
+
+def save_wifi_map(wifi_map):
+    """WiFi 센서 목록만 갱신한다 (슬롯·포토센서 배정은 보존)."""
+    save_mapping(load_mapping(), None, wifi_map)
 
 
 def save_din_map(din_map):

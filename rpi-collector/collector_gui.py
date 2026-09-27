@@ -33,13 +33,14 @@ if str(HERE) not in sys.path:
 
 try:
     import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
+    from tkinter import filedialog, messagebox, simpledialog, ttk
 except ImportError as e:            # Raspberry Pi OS Lite 등
     print("GUI 를 띄울 수 없습니다 (tkinter 없음: %s)\n"
           "글자 화면으로 수집하려면:  bash run.sh --auto" % e, file=sys.stderr)
     sys.exit(3)
 
 import helpdoc
+import sensor_link
 import session as session_mod
 import settings as settings_mod
 import slots
@@ -93,18 +94,26 @@ class SensorCard:
         self.badge.pack(side="left", padx=(0, 10))
         self.dot = tk.Label(l1, text="○", fg=GREY, font=("", 12))
         self.dot.pack(side="left", padx=(0, 6))
-        tk.Label(l1, text=ch.port, width=15, anchor="w",
-                 font=("monospace", 9)).pack(side="left")
-        self.hz = tk.Label(l1, text="", width=18, anchor="w")
+        self.src = tk.Label(l1, text=ch.port, width=28, anchor="w",
+                            font=("monospace", 9))
+        self.src.pack(side="left")
+        self.hz = tk.Label(l1, text="", width=16, anchor="w")
         self.hz.pack(side="left")
         self.fs = tk.Label(l1, text="", width=5, anchor="w")
         self.fs.pack(side="left")
-        self.mg = tk.Label(l1, text="", anchor="w")
+        # 폭 고정 — 데이터가 들어온 뒤 글자가 늘어나 창 오른쪽이 잘리지 않게
+        self.mg = tk.Label(l1, text="", width=15, anchor="w")
         self.mg.pack(side="left")
 
         # 2행: 이 센서의 포토센서 + 수동 조작
         l2 = ttk.Frame(self.frame)
         l2.grid(row=1, column=0, sticky="w", padx=10, pady=2)
+        # 받는 방식 — USB 직결 / WiFi(UDP). 센서 설정(SHT 진동센서 설정)과 같아야 한다.
+        ttk.Label(l2, text="수신").pack(side="left")
+        self.src_cb = ttk.Combobox(l2, width=6, state="readonly", values=["USB", "WiFi"])
+        self.src_cb.current(1 if ch.udp_port else 0)
+        self.src_cb.bind("<<ComboboxSelected>>", lambda e: self._on_src())
+        self.src_cb.pack(side="left", padx=(4, 12))
         ttk.Label(l2, text="포토센서").pack(side="left")
         self.din_cb = ttk.Combobox(l2, width=15, state="readonly",
                                    values=[l for l, _ in DIN_CHOICES])
@@ -130,6 +139,13 @@ class SensorCard:
                              justify="left", font=("monospace", 9))
         self.note.grid(row=3, column=0, sticky="w", padx=10, pady=(0, 8))
 
+    def _on_src(self):
+        wifi = self.src_cb.current() == 1
+        if wifi == bool(self.ch.udp_port):
+            return
+        if not self.app.change_source(self.ch, wifi):
+            self.src_cb.current(1 if self.ch.udp_port else 0)
+
     def _on_din(self):
         din = DIN_CHOICES[self.din_cb.current()][1]
         if din == self.ch.din:
@@ -146,6 +162,8 @@ class SensorCard:
         rec = ch.state == session_mod.RECORDING
 
         garbled = ch.garbled
+        peer = getattr(ch.link, "peer", None)
+        self.src.configure(text=ch.port + ("  ← %s" % peer if peer else ""))
         if ch.receiving:
             self.dot.configure(text="●", fg=GREEN)
         elif garbled:
@@ -178,6 +196,7 @@ class SensorCard:
         self.start_btn.configure(state="normal" if idle else "disabled")
         self.stop_btn.configure(state="normal" if rec else "disabled")
         self.din_cb.configure(state="readonly" if idle else "disabled")
+        self.src_cb.configure(state="readonly" if idle else "disabled")
 
         if rec:
             # 수집 중 — 빨간 배지가 깜빡이고 남은 시간을 보여 준다
@@ -208,7 +227,10 @@ class SensorCard:
             self.note.configure(fg=RED, text="펌웨어 확인")
         elif not ch.receiving:
             self.badge.configure(text="○ 데이터 없음", bg="#ddd", fg=RED)
-            self.note.configure(fg=RED, text="")
+            # WiFi 는 센서 쪽 설정(서버 IP·포트)이 맞아야 들어온다 — 넣어야 할 값을 보여 준다
+            self.note.configure(fg=RED, text=(
+                "센서 설정: 라즈베리파이 IP %s · 수신 포트 %d"
+                % (" / ".join(self.app.ips) or "?", ch.udp_port)) if ch.udp_port else "")
         else:
             auto = self.app.collector.auto_start
             self.badge.configure(text="대기" if auto else "대기 (자동 꺼짐)",
@@ -236,6 +258,7 @@ class CollectorApp(tk.Tk):
 
         self.cfg = settings_mod.load()
         self.events = queue.Queue()
+        self.ips = sensor_link.local_ips()
         self.blink = False
         self._ticks = 0
         st = ttk.Style(self)
@@ -289,6 +312,8 @@ class CollectorApp(tk.Tk):
         self.reopen_btn = ttk.Button(top, text="다시 연결", width=9,
                                      command=lambda: self.reopen())
         self.reopen_btn.pack(side="left", padx=6)
+        self.wifi_btn = ttk.Button(top, text="WiFi 센서 추가", command=self.on_add_wifi)
+        self.wifi_btn.pack(side="left")
 
         # 연결 상황 안내 (번호 없는 슬롯 · 일부만 연결 · 센서 없음)
         self.banner = tk.Label(body, text="", anchor="w", justify="left")
@@ -397,7 +422,7 @@ class CollectorApp(tk.Tk):
             self.banner.configure(
                 fg=RED, text="⚠ 번호 없는 센서: %s — [센서 번호 지정] 필요"
                              % ", ".join(os.path.basename(p.device) for p in res.unknown))
-        elif not res.assigned:
+        elif not self.collector.channels:
             self.banner.configure(fg=RED, text="⚠ 연결된 진동센서 없음")
         elif res.missing:
             self.banner.configure(fg="#555", text="ℹ 센서 %s 미연결"
@@ -425,6 +450,74 @@ class CollectorApp(tk.Tk):
         slots.auto_assign()
         self.logln("info", "센서 번호 지정: " + ", ".join(
             "센서 %d = %s" % (i + 1, p.short_slot) for i, p in enumerate(ports)))
+        self.reopen()
+
+    # ---------- WiFi 센서 ----------
+    def _ask_port(self, name, initial):
+        used = {p for n, p in slots.load_wifi_map().items() if n != name}
+        while True:
+            port = simpledialog.askinteger(
+                "WiFi 수신 포트", "센서 %s 의 수신 포트\n(SHT 진동센서 설정에서 넣은 값)" % name,
+                initialvalue=initial, minvalue=1024, maxvalue=65535, parent=self)
+            if port is None:
+                return None
+            if port in used:
+                messagebox.showwarning(APP_NAME, "포트 %d 는 다른 센서가 쓰고 있습니다.\n"
+                                                 "센서마다 다른 포트를 써야 합니다." % port)
+                initial = port + 1
+                continue
+            return port
+
+    def change_source(self, ch, wifi):
+        """센서의 받는 방식을 바꾼다. 바꿨으면 True."""
+        if self.collector.any_recording:
+            messagebox.showwarning(APP_NAME, "수집 중에는 바꿀 수 없습니다.")
+            return False
+        wm = slots.load_wifi_map()
+        if wifi:
+            port = self._ask_port(ch.name, 9000 + max(0, int(ch.name) - 1)
+                                  if ch.name.isdigit() else 9000)
+            if port is None:
+                return False
+            wm[ch.name] = port
+            self.logln("info", "센서 %s ← WiFi 포트 %d" % (ch.name, port))
+        else:
+            usb_names = {n for n, _ in slots.resolve().assigned}
+            if ch.name not in usb_names and not messagebox.askyesno(
+                    APP_NAME, "센서 %s 는 USB 로 연결돼 있지 않습니다.\n"
+                              "USB 로 바꾸면 목록에서 빠집니다. 바꿀까요?" % ch.name):
+                return False
+            wm.pop(ch.name, None)
+            self.logln("info", "센서 %s ← USB" % ch.name)
+        slots.save_wifi_map(wm)
+        self.after_idle(self.reopen)
+        return True
+
+    def on_add_wifi(self):
+        """USB 케이블 없이 WiFi 로만 보내는 센서를 추가한다."""
+        if self.collector.any_recording:
+            messagebox.showwarning(APP_NAME, "수집 중에는 추가할 수 없습니다.")
+            return
+        taken = set(self.collector.channels) | set(slots.load_wifi_map())
+        n = 1
+        while str(n) in taken:
+            n += 1
+        name = simpledialog.askstring("WiFi 센서 추가", "센서 번호", initialvalue=str(n),
+                                      parent=self)
+        if not name or not name.strip():
+            return
+        name = name.strip()
+        if name in self.collector.channels:
+            messagebox.showwarning(APP_NAME, "센서 %s 는 이미 있습니다. 그 센서 칸의 "
+                                             "‘수신’ 을 WiFi 로 바꾸세요." % name)
+            return
+        port = self._ask_port(name, 9000 + max(0, int(name) - 1) if name.isdigit() else 9000)
+        if port is None:
+            return
+        wm = slots.load_wifi_map()
+        wm[name] = port
+        slots.save_wifi_map(wm)
+        self.logln("info", "WiFi 센서 %s 추가 — 포트 %d" % (name, port))
         self.reopen()
 
     def change_din(self, ch, din):
@@ -551,7 +644,7 @@ class CollectorApp(tk.Tk):
             self.overall.configure(text="센서 없음", bg=IDLE_BG, fg=RED)
         self.all_start_btn.configure(state="normal" if chans else "disabled")
         self.all_stop_btn.configure(state="normal" if rec else "disabled")
-        for b in (self.assign_btn, self.reopen_btn, self.out_btn):
+        for b in (self.assign_btn, self.reopen_btn, self.out_btn, self.wifi_btn):
             b.configure(state="disabled" if rec else "normal")
         if refresh_recent:
             self._refresh_recent()

@@ -82,7 +82,7 @@ def channel_line(ch):
 
 def cmd_status():
     res = slots.resolve()
-    dins = slots.load_din_map(res.names)
+    dins = slots.load_din_map(sorted(set(res.names) | set(slots.load_wifi_map())))
     print("슬롯 설정: %s" % slots.SLOTS_PATH)
     if res.assigned:
         print("\n지정된 센서  (진동센서 1대 ↔ 포토센서 1개)")
@@ -90,6 +90,12 @@ def cmd_status():
             print("  %-4s %-14s %-24s  포토센서 DIN%d (GPIO%d)"
                   % (name, p.device, p.short_slot, dins.get(name, 1),
                      {1: 5, 2: 17, 3: 27, 4: 22}[dins.get(name, 1)]))
+    wifi = slots.load_wifi_map()
+    if wifi:
+        print("\nWiFi 로 받는 센서  (라즈베리파이 IP: %s)"
+              % ", ".join(sensor_link.local_ips()) or "?")
+        for name, port in sorted(wifi.items()):
+            print("  %-4s 수신 포트 %-6d 포토센서 DIN%d" % (name, port, dins.get(name, 1)))
     if res.unknown:
         print("\n⚠ 이름이 지정되지 않은 슬롯")
         names = slots.suggest_names(res)
@@ -101,10 +107,12 @@ def cmd_status():
         print("\nℹ 센서 %d대가 인식되었습니다. 이대로 수집할 수 있습니다."
           "  (%s 는 연결되지 않음)"
           % (len(res.assigned), ", ".join(res.missing)))
-    if not res.assigned and not res.unknown:
+    if not res.assigned and not res.unknown and not wifi:
         print("\n연결된 센서 포트가 없습니다.")
-    print("\n수집 가능 상태: %s" % ("예" if res.ok else "아니오"))
-    return 0 if res.ok else 2
+    # WiFi 센서만 있어도 수집할 수 있다 (USB 매핑이 없어도 됨)
+    ok = bool(res.assigned or wifi) and not res.unknown
+    print("\n수집 가능 상태: %s" % ("예" if ok else "아니오"))
+    return 0 if ok else 2
 
 
 def unnamed_guide(res):

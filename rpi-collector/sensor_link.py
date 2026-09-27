@@ -243,6 +243,153 @@ class SensorLink:
                 win_t0 = now
 
 
+class UdpLink:
+    """WiFi(UDP)로 보내는 센서 한 대의 수신 스레드. SensorLink 와 같은 모양이다.
+
+    세션(session.Channel)은 둘을 구분하지 않는다 — `stats`·`recording`·`queue`·
+    `flush()` 를 똑같이 쓴다. 센서마다 **수신 포트가 달라야** 한다 (한 포트에 두 대가
+    보내면 두 데이터가 한 파일에 섞인다). 펌웨어는 데이터그램 하나에 패킷 하나를 보낸다.
+    """
+
+    def __init__(self, name, udp_port, queue, *, default_fs_g=4):
+        self.name = name
+        self.udp_port = int(udp_port)
+        self.port = "WiFi :%d" % self.udp_port      # 화면·메타데이터 표기
+        self.queue = queue
+        self.default_fs_g = default_fs_g
+        self.peer = None                # 마지막으로 보낸 센서의 IP
+        self.stats = LinkStats()
+        self.recording = False
+        self._sock = None
+        self._thread = None
+        self._stop = threading.Event()
+        self._error = None
+        self._resync_req = threading.Event()
+        self._resync_done = threading.Event()
+
+    def open(self):
+        """포트를 연다. 다른 프로그램이 같은 포트를 쓰고 있으면 예외."""
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # 26.6 kHz ≈ 200 KB/s — 쓰기 스레드가 잠깐 밀려도 커널이 버티게 넉넉히
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        except OSError:
+            pass
+        s.bind(("0.0.0.0", self.udp_port))
+        s.settimeout(0.2)
+        self._sock = s
+        self.stats.connected = True
+
+    def start(self):
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, name="udp-" + self.name,
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout=2.0):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout)
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+        self.stats.connected = False
+
+    @property
+    def error(self):
+        return self._error
+
+    def flush(self, timeout=1.0):
+        """수집 시작 직전 — 쌓여 있던 과거 데이터그램을 버린다 (SensorLink.flush 와 같은 이유로
+        읽기 스레드가 비운다)."""
+        if not self._sock or not (self._thread and self._thread.is_alive()):
+            return
+        self._resync_done.clear()
+        self._resync_req.set()
+        self._resync_done.wait(timeout)
+
+    def _drain(self):
+        self._sock.setblocking(False)
+        try:
+            while True:
+                self._sock.recv(65535)
+        except (BlockingIOError, OSError):
+            pass
+        finally:
+            self._sock.settimeout(0.2)
+
+    def _loop(self):
+        import socket
+        seqt = SeqTracker()
+        st = self.stats
+        win_samples = 0
+        win_t0 = time.monotonic()
+        last_mg = (0.0, 0.0, 0.0)
+
+        while not self._stop.is_set():
+            if self._resync_req.is_set():
+                self._resync_req.clear()
+                self._drain()
+                seqt.last = None
+                self._resync_done.set()
+            try:
+                data, addr = self._sock.recvfrom(65535)
+            except socket.timeout:
+                data = None
+            except Exception as e:
+                self._error = "UDP %d 수신 실패: %s" % (self.udp_port, e)
+                st.read_errors += 1
+                st.connected = False
+                return
+
+            if data:
+                hdr = (parse_header(data, 0, default_fs_g=self.default_fs_g)
+                       if data[:4] == MAGIC_LE else None)
+                if (hdr is None or hdr.count == 0 or hdr.count > MAX_SAMPLES
+                        or len(data) < hdr.total_bytes):
+                    st.resync_bytes += len(data)      # 이 형식이 아닌 데이터그램
+                else:
+                    self.peer = addr[0]
+                    payload = bytes(data[hdr.size:hdr.total_bytes])
+                    last_mg = _tail_mg(payload, hdr.sensitivity)
+                    seqt.update(hdr.seq)
+                    st.lost = seqt.lost
+                    st.packets += 1
+                    st.samples += hdr.count
+                    st.rate_step = hdr.rate_step
+                    st.full_scale_g = hdr.full_scale_g
+                    st.version = hdr.version
+                    st.last_seen = time.monotonic()
+                    win_samples += hdr.count
+                    if self.recording:
+                        try:
+                            self.queue.put_nowait((hdr, payload))
+                        except Exception:
+                            st.queue_drops += 1
+
+            now = time.monotonic()
+            if now - win_t0 >= 1.0:
+                st.hz = win_samples / (now - win_t0)
+                st.mg = last_mg
+                win_samples = 0
+                win_t0 = now
+
+
+def local_ips():
+    """이 라즈베리파이의 IPv4 주소들 — WiFi 센서에 넣어야 할 '서버 IP' 안내용."""
+    import subprocess
+    try:
+        out = subprocess.run(["hostname", "-I"], capture_output=True, text=True,
+                             timeout=2).stdout
+        return [a for a in out.split() if a.count(".") == 3]
+    except Exception:
+        return []
+
+
 def target_hz(stats):
     """이 센서가 목표로 하는 샘플레이트 (rate_step 기준). 모르면 0."""
     return RATE_HZ.get(stats.rate_step, 0) if stats.rate_step is not None else 0

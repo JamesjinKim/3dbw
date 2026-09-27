@@ -464,6 +464,45 @@ with tempfile.TemporaryDirectory() as td:
     finally:
         settings_mod.SETTINGS_PATH = _orig
 
+# ---------------------------------------------------------------- WiFi 센서
+group("WiFi 센서 (UDP 수신 · 매핑 · 포토센서 기본값)")
+with tempfile.TemporaryDirectory() as td:
+    orig_dir, orig_path = slots.CONFIG_DIR, slots.SLOTS_PATH
+    slots.CONFIG_DIR = Path(td)
+    slots.SLOTS_PATH = slots.CONFIG_DIR / "slots.json"
+    try:
+        slots.save_wifi_map({"2": 9001})
+        slots.save_din_map({"1": 1})            # 다른 저장이 WiFi 목록을 지우면 안 된다
+        check(slots.load_wifi_map() == {"2": 9001}, "포토센서 저장이 WiFi 목록을 지움")
+        slots.save_mapping({"slot-a": "1"})
+        check(slots.load_wifi_map() == {"2": 9001}, "슬롯 저장이 WiFi 목록을 지움")
+        # WiFi 센서 2 만 있어도 DIN2 를 봐야 한다 (예전에는 DIN1)
+        check(slots.load_din_map(["2"]) == {"2": 2}, "센서 2 의 기본 포토센서가 DIN2 가 아님")
+    finally:
+        slots.CONFIG_DIR, slots.SLOTS_PATH = orig_dir, orig_path
+
+import socket as _socket
+_q = queue.Queue()
+_probe = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM); _probe.bind(("127.0.0.1", 0))
+_port = _probe.getsockname()[1]; _probe.close()
+_ul = sensor_link.UdpLink("W", _port, _q)
+_ul.open(); _ul.start()
+_tx = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+_pay = struct.pack("<3h", 0, 0, 8197) * 200             # ±4g 에서 Z ≈ 1000 mg
+for _seq in (1, 2, 4):                                  # 3 이 빠짐 → 유실 1
+    _tx.sendto(HEADER_V2.pack(MAGIC, 2, 4, 200, _seq, _seq, 4, 0) + _pay, ("127.0.0.1", _port))
+_tx.sendto(b"not a packet", ("127.0.0.1", _port))
+_ul.recording = True
+_tx.sendto(HEADER_V2.pack(MAGIC, 2, 4, 200, 5, 5, 4, 0) + _pay, ("127.0.0.1", _port))
+time.sleep(0.5)
+_ul.stop(); _tx.close()
+check(_ul.stats.packets == 4, "UDP 패킷 수가 다름: %d" % _ul.stats.packets)
+check(_ul.stats.lost == 1, "UDP seq 끊김을 유실로 세지 않음: %d" % _ul.stats.lost)
+check(_ul.stats.resync_bytes == len(b"not a packet"), "형식이 아닌 데이터그램을 세지 않음")
+check(_ul.peer == "127.0.0.1", "보낸 곳 IP 를 기록하지 않음")
+check(_q.qsize() == 1, "recording 일 때만 큐에 넣어야 함: %d" % _q.qsize())
+check(_ul.port == "WiFi :%d" % _port, "WiFi 표기가 다름")
+
 # 수집기 화면은 tkinter 가 있을 때만 import 한다 (Lite 이미지에는 없다)
 try:
     import tkinter  # noqa: F401

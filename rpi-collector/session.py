@@ -79,15 +79,19 @@ class RunResult:
 class Channel:
     """진동센서 1대 + 포토센서 1개. 자기 트리거만 바라보고 독립 동작한다."""
 
-    def __init__(self, name, port_device, din, collector):
+    def __init__(self, name, port_device, din, collector, udp_port=None):
         self.name = name
-        self.port = port_device
         self.din = din
         self.collector = collector
+        self.udp_port = udp_port        # None 이면 USB, 숫자면 WiFi(UDP) 수신 포트
 
         self.queue = queue.Queue(maxsize=QUEUE_MAXSIZE)
-        self.link = sensor_link.SensorLink(name, port_device, self.queue,
-                                           baud=collector.baud)
+        if udp_port is None:
+            self.link = sensor_link.SensorLink(name, port_device, self.queue,
+                                               baud=collector.baud)
+        else:
+            self.link = sensor_link.UdpLink(name, udp_port, self.queue)
+        self.port = self.link.port      # '/dev/ttyACM0' 또는 'WiFi :9001'
         self.trigger = trigger_mod.PhotoTrigger(
             din=din, active_low=collector.active_low,
             on_trigger=self._on_trigger)
@@ -311,7 +315,8 @@ class Channel:
             "resync_bytes": st.resync_bytes - self._base_resync,
             "bytes": size,
             "port": self.port,
-            "baud": self.collector.baud,
+            "source": "wifi" if self.udp_port else "usb",
+            "baud": None if self.udp_port else self.collector.baud,
             "photo_din": self.din,
             "photo_gpio": self.trigger.gpio,
             "photo_active_low": self.trigger.active_low,
@@ -397,8 +402,12 @@ class Collector:
         """매핑된 센서마다 채널을 만들어 연다. Resolution 을 돌려준다."""
         self.close()
         res = slots.resolve()
-        din_map = slots.load_din_map(res.names)
+        wifi = slots.load_wifi_map()
+        din_map = slots.load_din_map(sorted(set(res.names) | set(wifi)))
         for name, port in res.assigned:
+            if name in wifi:
+                # WiFi 로 받는 센서 — USB 는 전원용으로 꽂혀 있을 뿐 데이터가 오지 않는다
+                continue
             # open_path: udev 고정 이름(/dev/iis3dwb1)이 있으면 그쪽을 연다.
             # /dev/ttyACM 번호는 재부팅·재연결로 바뀌지만 고정 이름은 그대로다.
             ch = Channel(name, port.open_path, din_map.get(name, 1), self)
@@ -408,6 +417,18 @@ class Collector:
                 self._emit("error", "%s (%s) 열기 실패: %s" % (name, port.device, e))
                 continue
             self.channels[name] = ch
+        for name, udp_port in sorted(wifi.items()):
+            ch = Channel(name, None, din_map.get(name, 1), self, udp_port=udp_port)
+            try:
+                ch.open()
+            except Exception as e:
+                self._emit("error", "%s (WiFi 포트 %d) 열기 실패: %s — 다른 프로그램이 "
+                                    "같은 포트를 쓰고 있지 않은지 확인하세요"
+                           % (name, udp_port, e))
+                continue
+            self.channels[name] = ch
+        # WiFi 센서는 USB 매핑이 없어도 되므로 '연결 안 됨' 목록에서 뺀다
+        res.missing = [n for n in res.missing if n not in wifi]
 
         # 두 상황을 구분해 알린다.
         #
@@ -453,9 +474,18 @@ class Collector:
                 % ", ".join(p.short_slot for p in res.unknown))
 
         if not channel.receiving:
+            if getattr(channel, "udp_port", None):
+                ips = sensor_link.local_ips()
+                raise PreflightError(
+                    "%s 에서 데이터가 들어오지 않습니다 (WiFi 포트 %d).\n"
+                    "· 센서 설정의 라즈베리파이 IP 가 이 라즈베리파이(%s)인지\n"
+                    "· 센서 설정의 수신 포트가 %d 인지, 센서가 같은 WiFi 에 붙었는지 확인하세요"
+                    % (channel.name, channel.udp_port, ", ".join(ips) or "?",
+                       channel.udp_port))
             raise PreflightError(
                 "%s 에서 데이터가 들어오지 않습니다.\n"
-                "· 센서 설정이 USB 직결(transport=2)인지 확인하세요\n"
+                "· 센서 설정이 USB 직결인지 확인하세요 — WiFi 로 설정한 센서라면\n"
+                "  수집기 화면에서 이 센서의 수신을 WiFi 로 바꾸세요\n"
                 "· 보드레이트가 %d 로 맞는지 확인하세요"
                 % (channel.name, self.baud))
 

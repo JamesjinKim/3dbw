@@ -64,6 +64,10 @@ ESP32-S3 + IIS3DWB 초광대역 진동센서로 진동 데이터를 고속 수�
   - **공식 명칭: "SHT 진동센서 수집"** (창 제목·바탕화면 아이콘·도움말)
   - `collector_gui.py`: **수집기 화면(GUI)** — `bash run.sh` 기본. 센서 칸마다 자기 포토센서
     실시간 상태·DIN 선택·수동 시작/중지·진행률. 공통 설정(수집 시간 등)을 화면에서 바꾼다
+  - **WiFi 센서도 수집한다** (2026-09-28): 센서마다 받는 방식 USB / WiFi(UDP 수신 포트).
+    `slots.json` 의 `"wifi": {센서이름: 포트}` — 같은 이름의 USB 구멍은 전원용으로 보고 열지
+    않는다. `sensor_link.UdpLink` 가 SensorLink 와 같은 모양이라 세션·포토센서·저장은 공용.
+    포토센서 기본값은 센서 N → DIN N (`slots.load_din_map`)
   - `settings.py`: 공통 설정 저장(`settings.json`) — **GUI 와 글자 화면이 같은 파일**을 쓴다
     (Lite 에서 글자 화면으로 돌아도 GUI 에서 정한 수집 시간이 적용되게)
   - `collect_cli.py`: 글자 화면 — 화면이 없는 RPi(Lite·SSH)에서 run.sh 가 대신 띄운다
